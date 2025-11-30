@@ -4,43 +4,99 @@ const char* ssid = "ESP32_Server";
 const char* password = "123456789";
 
 WiFiServer server(3333);
-WiFiClient client;  // client persistente
+WiFiClient client;
+
+enum StatoSessione {
+  MENU,
+  REGISTRAZIONE_EMAIL,
+  REGISTRAZIONE_PASSWORD,
+  LOGIN_EMAIL,
+  LOGIN_PASSWORD
+};
+
+StatoSessione stato = MENU;
+
+void inviaMenu() {
+  client.println("\n=== MENU PRINCIPALE ===");
+  client.println("1) Registrazione");
+  client.println("2) Login");
+  client.println("Seleziona un'opzione:");
+}
 
 void setup() {
   Serial.begin(115200);
 
   WiFi.softAP(ssid, password);
-
-  Serial.print("AP attivo. IP: ");
+  Serial.print("AP attivo con IP: ");
   Serial.println(WiFi.softAPIP());
 
   server.begin();
 }
 
 void loop() {
-
-  // Se non c'è ancora un client, prova ad accettarlo
+  
+  // Gestione connessione persistente
   if (!client || !client.connected()) {
     client = server.available();
 
     if (client) {
       Serial.println("Client connesso!");
+      stato = MENU;
+      inviaMenu();
     }
-
-    delay(50);
     return;
   }
 
-  // Se invece è connesso, gestisco i dati sulla connessione attiva
   if (client.available()) {
-    String data = client.readStringUntil('\n');
-    data.trim();
+    String input = client.readStringUntil('\n');
+    input.trim();
 
-    Serial.print("Ricevuto: ");
-    Serial.println(data);
+    switch (stato) {
 
-    client.println("ACK");
+      case MENU:
+        if (input == "1") {
+          stato = REGISTRAZIONE_EMAIL;
+          client.println("Inserisci email per la registrazione:");
+        } 
+        else if (input == "2") {
+          stato = LOGIN_EMAIL;
+          client.println("Inserisci email per il login:");
+        } 
+        else {
+          client.println("Opzione non valida.");
+          inviaMenu();
+        }
+        break;
+
+      case REGISTRAZIONE_EMAIL:
+        Serial.print("Registrazione - Email ricevuta: ");
+        Serial.println(input);
+        stato = REGISTRAZIONE_PASSWORD;
+        client.println("Inserisci password:");
+        break;
+
+      case REGISTRAZIONE_PASSWORD:
+        Serial.print("Registrazione - Password ricevuta: ");
+        Serial.println(input);
+        client.println("Registrazione completata (simulazione).");
+        stato = MENU;
+        inviaMenu();
+        break;
+
+      case LOGIN_EMAIL:
+        Serial.print("Login - Email ricevuta: ");
+        Serial.println(input);
+        stato = LOGIN_PASSWORD;
+        client.println("Inserisci password:");
+        break;
+
+      case LOGIN_PASSWORD:
+        Serial.print("Login - Password ricevuta: ");
+        Serial.println(input);
+        client.println("Login completato (simulazione).");
+        stato = MENU;
+        inviaMenu();
+        break;
+    }
   }
-
-  delay(10);
 }
