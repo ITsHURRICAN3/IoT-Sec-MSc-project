@@ -1,0 +1,106 @@
+# Analisi Approfondita e Teorica di [Client.ino](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino)
+
+Questo documento fornisce un'analisi esaustiva, tecnica e accademica del funzionamento del file [Client.ino](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino). Il codice implementa un client IoT sicuro su piattaforma ESP32, integrando funzionalità di rete (WiFi), interazione hardware (RFID) e una robusta suite crittografica (libsodium) per garantire riservatezza, integrità e autenticazione.
+
+## 1. Panoramica Architetturale
+
+Il sistema opera secondo un'architettura **Client-Server** su protocollo TCP/IP.
+- **Hardware**: ESP32 (Microcontroller), Modulo RFID RC522 (interfaccia SPI).
+- **Network Layer**: WiFi (Station Mode) per la connettività, Socket TCP per il trasporto dati verso il server (`192.168.4.1` porta `80`).
+- **Security Layer**: Implementazione custom di un protocollo di trasporto sicuro e autenticazione forte basata su crittografia a curva ellittica (ECC).
+
+## 2. Analisi dei Componenti Software
+
+### 2.1 Librerie Fondamentali
+Il codice si appoggia a librerie standard e di terze parti cruciali:
+- **`WiFi.h`**: Gestisce lo stack TCP/IP dell'ESP32.
+- **`SPI.h` & `MFRC522.h`**: Gestiscono la comunicazione a basso livello (protocollo SPI) con il reader RFID per leggere gli UID dei tag (Unique Identifier).
+- **`Sodium.h`**: Questa è la componente centrale per la sicurezza. Rappresenta l'integrazione di **libsodium**, una libreria crittografica moderna, performante e opinionated (ovvero che forza l'uso di primitive sicure).
+
+### 2.2 Gestione Hardware (RFID)
+La funzione [getRFIDUID()](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino#24-43) implementa un polling bloccante (`while(true)`).
+- Attende la presenza fisica di una carta (`PICC_IsNewCardPresent`).
+- Legge il seriale (`PICC_ReadCardSerial`).
+- Converte i byte dell'UID in una stringa esadecimale.
+- **Nota Tecnica**: L'uso di `PICC_HaltA()` e `PCD_StopCrypto1()` è standard per resettare lo stato del tag dopo la lettura, prevenendo letture multiple indesiderate dello stesso passaggio.
+
+## 3. Protocollo di Sicurezza (Theoretical Framework)
+
+Il cuore teorico del codice risiede nell'implementazione di un canale sicuro e di un meccanismo di autenticazione avanzato.
+
+### 3.1 Session Handshake (Key Exchange)
+La funzione [SessionHandshake()](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino#149-185) stabilisce un canale cifrato prima di scambiare dati sensibili. Implementa un protocollo di scambio chiavi (Key Exchange) riconducibile a **X25519** (Elliptic Curve Diffie-Hellman su Curve25519).
+
+1.  **Generazione Chiavi Effimere**: `crypto_kx_keypair` genera una coppia di chiavi (Privata/Pubblica) ogni volta che inizia una sessione. Questo garantisce la **Perfect Forward Secrecy**: se la chiave di sessione viene compromessa in futuro, le sessioni passate rimangono sicure perché usavano chiavi effimere diverse.
+2.  **Scambio**: Il client invia la sua Chiave Pubblica al Server e attende la Chiave Pubblica del Server.
+3.  **Derivazione Chiave di Sessione**: `crypto_kx_client_session_keys` calcola due chiavi simmetriche condivise (`rx` per ricevere, `tx` per trasmettere) combinando la chiave privata del client e la pubblica del server.
+
+### 3.2 Crittografia del Canale (AEAD)
+Una volta stabilita la sessione (`isSecure = true`), tutte le comunicazioni avvengono tramite [sendEncrypted](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino#46-78) e la decrittazione nel [loop](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino#207-327).
+- **Algoritmo**: Viene utilizzato **ChaCha20-Poly1305**.
+    - **ChaCha20**: Cifrario a flusso (Stream Cipher) ad alta velocità, ideale per dispositivi embedded rispetto ad AES (che richiede accelerazione hardware per performance simili).
+    - **Poly1305**: Message Authentication Code (MAC) che garantisce l'**integrità** e l'**autenticità** dei dati.
+- **Nonce (Number used ONCE)**: Per ogni messaggio viene generato un `nonce` casuale. Questo è fondamentale per evitare attacchi di *Replay* e per garantire che lo stesso messaggio cifrato due volte produca ciphertext diversi.
+- **Sicurezza**: Questa combinazione fornisce **Authenticated Encryption with Associated Data (AEAD)**. Il ricevente può verificare che il messaggio non sia stato alterato (Integrità) e che provenga dal possessore della chiave di sessione (Autenticità).
+
+### 3.3 Identità Digitale e Derivazione Chiavi (Deterministic Key Gen)
+Il sistema introduce un concetto avanzato di identità basata su **Multi-Factor Authentication (MFA)** implicita.
+La funzione [deriveIdentity(uid, pass)](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino#191-206) non memorizza le credenziali, ma le usa per rigenerare deterministicamente una chiave crittografica.
+
+1.  **Input**: UID del Tag RFID (Fattore "Possesso") + Password Utente (Fattore "Conoscenza").
+2.  **Hashing (KDF)**: `crypto_generichash` (implementazione di **BLAKE2b**) combina gli input per produrre un `seed` a 32 byte. Questo funge da Key Derivation Function (KDF).
+3.  **Generazione Keypair**: `crypto_sign_seed_keypair` usa il `seed` per generare una coppia di chiavi **Ed25519** (EdDSA signature scheme).
+    - **Teoria**: Questo approccio permette all'utente di portare con sé la propria identità crittografica (derivabile al volo) senza che la chiave privata debba mai essere salvata in modo permanente sulla memoria flash del dispositivo (evitando rischi di estrazione).
+
+### 3.4 Autenticazione Challenge-Response (ZKP - Zero Knowledge Proof)
+Il processo di Login (`LOG`) e Registrazione (`REG`) utilizza uno schema Challenge-Response per provare l'identità senza trasmettere la password.
+
+1.  **Richiesta**: Il client invia `LOG <user>`.
+2.  **Challenge**: Il server risponde con una stringa casuale di 64 caratteri esadecimali (32 byte), cifrata nel tunnel sicuro.
+3.  **Proof (Firma)**: Il client riceve la challenge, la decifra e la **Firma** digitalmente usando la sua chiave privata derivata (`user_sk`) tramite l'algoritmo **Ed25519** (`crypto_sign_detached`).
+4.  **Verifica**: La firma viene inviata al server. Il server, possedendo la chiave pubblica dell'utente (registrata in precedenza), può verificare matematicamente che il client possiede la chiave privata corrispondente (e quindi ha scansionato il tag corretto e inserito la password corretta) senza mai vedere la password o la chiave privata.
+
+In ambito accademico, questo schema dimostra il possesso di un segreto (la chiave privata/credenziali) senza rivelarlo, proprietà fondamentale dei protocolli a conoscenza zero (anche se tecnicamente qui si tratta di una firma digitale classica usata come prova di possesso).
+
+## 4. Analisi del Flusso Logico (Finite State Machine Implicita)
+
+Il codice nel [loop()](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino#207-327) gestisce una macchina a stati implicita:
+
+1.  **Disconnected**: Tenta la connessione WiFi e TCP.
+2.  **Connected (Insecure)**: Esegue immediatamente [SessionHandshake](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino#149-185).
+3.  **Secure Session Established**:
+    - Ascolta messaggi cifrati.
+    - Gestisce input seriale.
+4.  **Authentication Flow**:
+    - Stato `hasIdentity`: Flag che indica se le credenziali sono state inserite e le chiavi derivate.
+    - Se riceve un messaggio di 32 byte (Challenge) e `hasIdentity` è true -> Esegue la firma (Proof Generation).
+
+## 5. Conclusioni
+
+Il file [Client.ino](file:///d:/Codici%20e%20scripts/Progetto%20IoTSec%20+%20DataSec/IoT-Sec-MSc-project/ESP32_Warehouse/Client/Client.ino) rappresenta un esempio eccellente di sicurezza "Design-in" per IoT. Invece di affidarsi alla sicurezza del livello di trasporto standard (come TLS, spesso pesante per microcontrollori o complesso da gestire con certificati PKI), implementa un tunnel crittografico leggero ma robusto (X25519 + ChaCha20-Poly1305) e un sistema di autenticazione forte che elimina la trasmissione di password in chiaro o cifrate, mitigando rischi di intercettazione, replay attack e furto di credenziali lato server (poiché il server salva solo le chiavi pubbliche).
+
+1) Perché si usano sodium_hex2bin() e sodium_bin2hex()?
+Queste funzioni servono a colmare il divario tra come i dati crittografici "vivono" nella memoria e come possono essere "viaggiare" sulla rete.
+
+Natura dei dati crittografici (Binario): Le chiavi, le firme digitali e i messaggi cifrati sono sequenze di byte puramente casuali (valori da 0x00 a 0xFF). In memoria, una chiave è solo un buffer di byte.
+Problema della trasmissione (Testo): I protocolli utilizzati nel codice (Serial, client.println su TCP) sono orientati al testo (ASCII/UTF-8). Se provassi a inviare la chiave binaria grezza, potresti incontrare byte speciali (come il carattere Null 0x00, il Newline 0x0A o 0x0D) che verrebbero interpretati dal protocollo di rete come comandi (es. "fine stringa" o "a capo"), corrompendo i dati o troncando la trasmissione.
+Soluzione (Encoding):
+sodium_bin2hex() (Binary to Hex): Prende i byte grezzi e li converte in una stringa di caratteri sicuri (solo numeri 0-9 e lettere a-f). Questa stringa è sicura da inviare ovunque perché non contiene caratteri di controllo.
+sodium_hex2bin() (Hex to Binary): Fa l'operazione inversa. Quando ricevi la stringa sicura dal server, devi ritrasformarla nei byte grezzi originali affinché le funzioni matematiche di libsodium possano usarla.
+2) Perché la lunghezza è crypto_kx_PUBLICKEYBYTES * 2?
+La risposta è puramente matematica e deriva direttamente dalla conversione in Esadecimale spiegata sopra.
+
+Dimensione in Byte: La costante crypto_kx_PUBLICKEYBYTES definisce quanti byte occupa una chiave pubblica in memoria (per l'algoritmo X25519 usato qui, sono 32 byte).
+Rappresentazione Hex: Nel sistema esadecimale, occorrono 2 caratteri per rappresentare 1 byte (un byte ha 8 bit; un carattere hex rappresenta 4 bit, quindi ne servono due).
+Esempio: Il byte con valore 255 (binario 11111111) diventa FF.
+Il Calcolo: $$ \text{Lunghezza Stringa} = \text{Dimensione Byte} \times 2 $$ $$ 32 \text{ Byte} \times 2 = 64 \text{ Caratteri} $$
+Il controllo nel codice verifica quindi che la stringa ricevuta abbia esattamente la lunghezza corretta per contenere una chiave valida. Se ricevesse 63 o 65 caratteri, saprebbe immediatamente che i dati sono corrotti o incompleti.
+
+Esatto, hai centrato il punto perfetto.
+
+Il flusso è proprio questo:
+
+Elaborazione (Matematica/Crypto): Le funzioni crittografiche (per cifrare, generare chiavi, firmare) lavorano e pretendono dati binari puri.
+Trasmissione (Network/Serial): Per far viaggiare questi dati su canali di testo (come la seriale o un socket TCP semplice) senza romperli, è obbligatorio convertirli in un formato sicuro come l'Esadecimale.
+E ovviamente vale il viceversa: quando ricevi, prima converti da Hex a Binario, e poi elabori.
+
