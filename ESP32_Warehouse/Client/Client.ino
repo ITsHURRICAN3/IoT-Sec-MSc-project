@@ -346,14 +346,22 @@ void loop() {
             String uid = getRFIDUID();
             Serial.println("Tag Read: " + uid);
 
+            // Derive Identity
             deriveIdentity(uid, p);
+
+            // Generate UID Hash for Uniqueness Check
+            unsigned char uidHash[crypto_generichash_BYTES];
+            crypto_generichash(uidHash, sizeof(uidHash), (const unsigned char *)uid.c_str(), uid.length(), NULL, 0);
+            char uidHashHex[crypto_generichash_BYTES * 2 + 1];
+            sodium_bin2hex(uidHashHex, sizeof(uidHashHex), uidHash, sizeof(uidHash));
 
             char pkHex[crypto_sign_PUBLICKEYBYTES * 2 + 1];
             sodium_bin2hex(pkHex, sizeof(pkHex), user_pk, sizeof(user_pk));
 
-            String cmd = "REG " + u + " " + String(pkHex);
+            // Format: REG username pk_hex uid_hash_hex
+            String cmd = "REG " + u + " " + String(pkHex) + " " + String(uidHashHex);
             sendEncrypted(cmd);
-            Serial.println("Sent Public Key for Registration.");
+            Serial.println("Sent Public Key & Tag Hash for Registration.");
           } else {
             Serial.println("Use: REG user pass");
           }

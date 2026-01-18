@@ -191,16 +191,53 @@ String getUserPK(String u) {
   return "";
 }
 
-// Stores encrypted: username;pk_hex
-bool registerUserPK(String u, String pk_hex) {
+// Helper to check if a specific tag hash is already registered
+bool isTagRegistered(String tagHash) {
+  File file = SD.open(FILE_USERS);
+  if (!file)
+    return false;
+
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0)
+      continue;
+
+    String plain = decryptLine(line);
+    if (plain.length() == 0)
+      continue;
+
+    // Format: username;pk_hex;tag_hash
+    int sep1 = plain.indexOf(';');
+    if (sep1 == -1)
+      continue;
+    int sep2 = plain.indexOf(';', sep1 + 1);
+
+    if (sep2 != -1) {
+      String storedHash = plain.substring(sep2 + 1);
+      if (storedHash == tagHash) {
+        file.close();
+        return true;
+      }
+    }
+  }
+  file.close();
+  return false;
+}
+
+// Stores encrypted: username;pk_hex;tag_hash
+bool registerUserPK(String u, String pk_hex, String tag_hash) {
   if (getUserPK(u) != "")
-    return false; // Already exists
+    return false; // User already exists
+
+  if (isTagRegistered(tag_hash))
+    return false; // Tag already registered
 
   File file = SD.open(FILE_USERS, FILE_APPEND);
   if (!file)
     return false;
 
-  String plain = u + ";" + pk_hex;
+  String plain = u + ";" + pk_hex + ";" + tag_hash;
   file.println(encryptLine(plain));
   file.close();
   return true;
@@ -525,12 +562,15 @@ void loop() {
         // Command Processing
         if (session.state == STATE_AUTH) {
           if (plain.startsWith("REG ")) {
-            // REG username hex_public_key
+            // REG username hex_public_key hex_tag_hash
             int gap1 = plain.indexOf(' ');
             int gap2 = plain.indexOf(' ', gap1 + 1);
-            if (gap2 != -1) {
+            int gap3 = plain.indexOf(' ', gap2 + 1);
+
+            if (gap2 != -1 && gap3 != -1) {
               String u = plain.substring(gap1 + 1, gap2);
-              String pk_hex = plain.substring(gap2 + 1);
+              String pk_hex = plain.substring(gap2 + 1, gap3);
+              String tag_hash = plain.substring(gap3 + 1);
 
               if (!isValidName(u)) {
                 sendEncrypted(client,
@@ -538,13 +578,17 @@ void loop() {
               } else if (pk_hex.length() != crypto_sign_PUBLICKEYBYTES * 2) {
                 sendEncrypted(client, "Error: Invalid Public Key length.");
               } else {
-                if (registerUserPK(u, pk_hex))
+                if (isTagRegistered(tag_hash)) {
+                  sendEncrypted(client, "Error: Tag already registered!");
+                } else if (registerUserPK(u, pk_hex, tag_hash)) {
                   sendEncrypted(client, "REG SUCCESS");
-                else
-                  sendEncrypted(client, "Error: User exists");
+                } else {
+                  sendEncrypted(client, "Error: User exists or Write Fail");
+                }
               }
             } else
-              sendEncrypted(client, "Invalid Format. Use: REG username pk_hex");
+              sendEncrypted(
+                  client, "Invalid Format. Use: REG username pk_hex tag_hash");
 
             sendEncrypted(client,
                           "1. Register (Format: REG username password)\n2. "
@@ -664,7 +708,8 @@ void loop() {
                 if (qty < 0)
                   sendEncrypted(client, "Error: Negative.");
                 else if (qty > MAX_QTY)
-                  sendEncrypted(client, "Error: Limit of 10000 units exceeded.");
+                  sendEncrypted(client,
+                                "Error: Limit of 10000 units exceeded.");
                 else if (getItemQty(item) != -1)
                   sendEncrypted(client, "Error: Exists.");
                 else {
