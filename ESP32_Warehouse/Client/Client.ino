@@ -4,7 +4,7 @@
 #include <WiFi.h>
 
 const char *SERVER_IP = "192.168.4.1";
-const int SERVER_PORT = 80;
+const int SERVER_PORT = 32465;
 
 // RFID Pins
 #define SS_PIN 5
@@ -351,15 +351,19 @@ void loop() {
 
             // Generate UID Hash for Uniqueness Check
             unsigned char uidHash[crypto_generichash_BYTES];
-            crypto_generichash(uidHash, sizeof(uidHash), (const unsigned char *)uid.c_str(), uid.length(), NULL, 0);
+            crypto_generichash(uidHash, sizeof(uidHash),
+                               (const unsigned char *)uid.c_str(), uid.length(),
+                               NULL, 0);
             char uidHashHex[crypto_generichash_BYTES * 2 + 1];
-            sodium_bin2hex(uidHashHex, sizeof(uidHashHex), uidHash, sizeof(uidHash));
+            sodium_bin2hex(uidHashHex, sizeof(uidHashHex), uidHash,
+                           sizeof(uidHash));
 
             char pkHex[crypto_sign_PUBLICKEYBYTES * 2 + 1];
             sodium_bin2hex(pkHex, sizeof(pkHex), user_pk, sizeof(user_pk));
 
             // Format: REG username pk_hex uid_hash_hex
-            String cmd = "REG " + u + " " + String(pkHex) + " " + String(uidHashHex);
+            String cmd =
+                "REG " + u + " " + String(pkHex) + " " + String(uidHashHex);
             sendEncrypted(cmd);
             Serial.println("Sent Public Key & Tag Hash for Registration.");
           } else {
