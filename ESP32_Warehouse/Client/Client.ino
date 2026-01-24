@@ -2,33 +2,58 @@
 #include <SPI.h>
 #include <Sodium.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <time.h>
 
 const char *SERVER_IP = "192.168.4.1";
-const int SERVER_PORT = 32465;
+const int SERVER_PORT = 443;
 
 // RFID Pins
 #define SS_PIN 5
 #define RST_PIN 22
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-WiFiClient client;
+WiFiClientSecure client; // TLS Client
+
+// --- ROOT CA CERTIFICATE (TRUST ANCHOR) ---
+// IMPORTANT: REPLACE THIS with your generated CA Certificate
+// Questo certificato serve a verificare che il Server sia chi dice di essere.
+// Deve corrispondere alla CA che ha firmato il certificato del Server.
+const char *root_ca_cert =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDpTCCAo2gAwIBAgIUA0YJxHkK/dEcB+fj8IDMzwc+FDYwDQYJKoZIhvcNAQEL\n"
+    "BQAwYjELMAkGA1UEBhMCSVQxETAPBgNVBAgMCEF2ZWxsaW5vMREwDwYDVQQHDAhB\n"
+    "dmVsbGlubzENMAsGA1UECgwEd2FyZDENMAsGA1UECwwEd2FyZDEPMA0GA1UEAwwG\n"
+    "TXlSb290MB4XDTI2MDEyMjE1NDQzNFoXDTM2MDEyMDE1NDQzNFowYjELMAkGA1UE\n"
+    "BhMCSVQxETAPBgNVBAgMCEF2ZWxsaW5vMREwDwYDVQQHDAhBdmVsbGlubzENMAsG\n"
+    "A1UECgwEd2FyZDENMAsGA1UECwwEd2FyZDEPMA0GA1UEAwwGTXlSb290MIIBIjAN\n"
+    "BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsioNP32gklNVc+DF+8FXuCcnJ3xZ\n"
+    "y64mQaydd4aSZQDQA98JhNJvkmnt9sqfvYK7/xoec5ZI97JXpEDFXtfAHuVhw8Ni\n"
+    "2Yy15k47IZn/OU1PsBcXtLW3uzDog2nbR6lVgPyOshtkPgeJSuXdMrs0jPzmu0+3\n"
+    "uyYlJZng4bQxfwuakP0hEV6AfE/6M7pSuSr35GmCTYfYSFOpxex3jgS9vaYbveqr\n"
+    "b641PssyQ1jmT7qzAmBshNBLXj0y4a4nzoakIzmUGHgh6ojSsj5vsNV9mRkgTwVE\n"
+    "hOoXhtwKxGYB439BeNfaGaFYLayAxKSSU1QMMl4cbn3HtwX7EzQrRzKcewIDAQAB\n"
+    "o1MwUTAdBgNVHQ4EFgQUUCRyfkIeJlmx0vZ3PSFB6JEpTMwwHwYDVR0jBBgwFoAU\n"
+    "UCRyfkIeJlmx0vZ3PSFB6JEpTMwwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B\n"
+    "AQsFAAOCAQEAqAFlpsXHfDrk+xpmZOmda8mrMvfzlmZc/6tpYOoAuVBYJxg0iJFG\n"
+    "rwvuFSXjxcTMVPzxobANxtaZ//kZw6wfp8di5pNJXi4wqyqCz8cmUd9tWAHrxvHF\n"
+    "jB89EyBfXKWXoM7QQq9S1JScq7pYu/fqtHGQAWGZ6nC7tDq0FV07I8Ps1MBPiA1Y\n"
+    "4QYWANqWKBDy/+A2snTwqtIqBgClDBPFnTGCm98DF2QRyx1LgUTS90HPW9uRk7BE\n"
+    "u92vAUuSUmEgWDQ3KDpV1Xmm7CsMMseEmP77t7PilWY6MilgBWW9okpjhZhwPlYV\n"
+    "ZbLdPG294sg4yfHoFGiTifKNP0iDi1eYdw==\n"
+    "-----END CERTIFICATE-----\n";
 
 // Prototypes
 void connect();
-bool SessionHandshake();
 void printAuthHelp();
 
-// Crypto Globals
-unsigned char client_pk[crypto_kx_PUBLICKEYBYTES];
-unsigned char client_sk[crypto_kx_SECRETKEYBYTES];
-unsigned char server_pk[crypto_kx_PUBLICKEYBYTES];
-unsigned char rx[crypto_kx_SESSIONKEYBYTES];
-unsigned char tx[crypto_kx_SESSIONKEYBYTES];
-bool isSecure = false;
-
 // --- Helper: Wait for RFID and return UID String ---
+// String getRFIDUID() {
+//   Serial.println(">> Please scan your RFID Tag now..."); // Cleaned per user
+//   request
 String getRFIDUID() {
-  Serial.println(">> Please scan your RFID Tag now...");
+  // Silent scan
+
   while (true) {
     if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
       String uid = "";
@@ -43,52 +68,7 @@ String getRFIDUID() {
       return uid;
     }
     delay(50);
-    // Keep serial alive/inputs? No, pure block for RFID
   }
-}
-
-// --- Crypto Helpers ---
-
-void sendEncrypted(String msg) {
-  if (!isSecure) {
-    client.println(msg);
-    return;
-  }
-
-  unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
-  randombytes_buf(nonce, sizeof(nonce));
-
-  unsigned long long ciphertext_len;
-  int msg_len = msg.length();
-  unsigned char *ciphertext = (unsigned char *)malloc(
-      msg_len + crypto_aead_chacha20poly1305_ietf_ABYTES);
-
-  crypto_aead_chacha20poly1305_ietf_encrypt(ciphertext, &ciphertext_len,
-                                            (const unsigned char *)msg.c_str(),
-                                            msg_len, NULL, 0, NULL, nonce, tx);
-
-  char *hex_nonce = (char *)malloc(sizeof(nonce) * 2 + 1);
-  sodium_bin2hex(hex_nonce, sizeof(nonce) * 2 + 1, nonce, sizeof(nonce));
-
-  char *hex_cipher = (char *)malloc(ciphertext_len * 2 + 1);
-  sodium_bin2hex(hex_cipher, ciphertext_len * 2 + 1, ciphertext,
-                 ciphertext_len);
-
-  client.print(hex_nonce);
-  client.print(":");
-  client.println(hex_cipher);
-
-  free(ciphertext);
-  free(hex_nonce);
-  free(hex_cipher);
-}
-
-// Helper to print auth instructions
-void printAuthHelp() {
-  Serial.println("\n--- Authentication Menu ---");
-  Serial.println("1. Register -> Use: REG username password");
-  Serial.println("2. Login    -> Use: LOG username password");
-  Serial.println("---------------------------\n");
 }
 
 void setup() {
@@ -105,51 +85,23 @@ void setup() {
       ;
   }
 
-  Serial.println("\n--- ESP32 Client Setup (Secure + RFID) ---");
+  // Load Trust Anchor (CA)
+  client.setCACert(root_ca_cert);
+
+  Serial.println("\n--- ESP32 Client Setup (TLS Enabled) ---");
   Serial.println("RFID Reader Initialized.");
+
+  // --- HACK PER RETE ISOLATA ---
+  // Impostiamo l'ora manualmente a una data valida (es. 1 Gen 2025)
+  // Così la validazione temporale del certificato X.509 passa
+  struct timeval tv;
+  tv.tv_sec = 1735689600; // Epoch per 1 Gen 2025
+  tv.tv_usec = 0;
+  settimeofday(&tv, NULL);
+  Serial.println("Time manually set to 2025 (fake) for Cert Validation.");
 
   // Start Connection
   connect();
-}
-
-bool SessionHandshake() {
-  Serial.println("Starting Secure Handshake...");
-
-  // 1. Generate Ephemeral Keys
-  crypto_kx_keypair(client_pk, client_sk);
-
-  // 2. Send Client PK
-  char hex_client_pk[crypto_kx_PUBLICKEYBYTES * 2 + 1];
-  sodium_bin2hex(hex_client_pk, sizeof(hex_client_pk), client_pk,
-                 sizeof(client_pk));
-  client.println(hex_client_pk);
-
-  // 3. Wait for Server PK
-  unsigned long start = millis();
-  while (millis() - start < 5000) {
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      line.trim();
-
-      if (line.length() == crypto_kx_PUBLICKEYBYTES * 2) {
-        sodium_hex2bin(server_pk, sizeof(server_pk), line.c_str(),
-                       line.length(), NULL, NULL, NULL);
-
-        // 4. Compute Session Keys
-        if (crypto_kx_client_session_keys(rx, tx, client_pk, client_sk,
-                                          server_pk) != 0) {
-          Serial.println("Key Exchange Failed.");
-          return false;
-        }
-
-        isSecure = true;
-        Serial.println("Secure Handshake Success!");
-        return true;
-      }
-    }
-  }
-  Serial.println("Handshake Timeout.");
-  return false;
 }
 
 // --- User Identity ---
@@ -157,10 +109,9 @@ unsigned char user_pk[crypto_sign_PUBLICKEYBYTES];
 unsigned char user_sk[crypto_sign_SECRETKEYBYTES];
 bool hasIdentity = false;
 
-// Derive Ed25519 Keypair from UID + Password (simulating ZKP Secret)
+// Derive Ed25519 Keypair from UID + Password
 void deriveIdentity(String uid, String pass) {
   unsigned char seed[crypto_sign_SEEDBYTES];
-  unsigned char hash_in[128]; // Arbitrary buffer
   String input = uid + pass;
 
   // Use generic hash (BLAKE2b) to create deterministic seed from credentials
@@ -171,12 +122,11 @@ void deriveIdentity(String uid, String pass) {
   crypto_sign_seed_keypair(user_pk, user_sk, seed);
   hasIdentity = true;
 
-  Serial.println("Identity Derived (ZKP Secret Ready).");
+  Serial.println("Identity Derived.");
 }
 
 void connect() {
   while (true) {
-    isSecure = false;
     WiFi.disconnect(true);
     delay(100);
 
@@ -191,7 +141,7 @@ void connect() {
       }
       String ssid = Serial.readStringUntil('\n');
       ssid.trim();
-      Serial.println("SSID: " + ssid);
+      // Serial.println("SSID: " + ssid); // Removed
 
       Serial.println("Enter WiFi Password:");
       while (Serial.available() == 0) {
@@ -199,7 +149,7 @@ void connect() {
       }
       String pass = Serial.readStringUntil('\n');
       pass.trim();
-      Serial.println("Password: " + pass);
+      // Serial.println("Password: " + pass); // Removed
 
       Serial.print("Connecting to WiFi...");
       WiFi.begin(ssid.c_str(), pass.c_str());
@@ -213,7 +163,7 @@ void connect() {
 
       if (WiFi.status() == WL_CONNECTED) {
         Serial.println("\nConnected to WiFi!");
-        Serial.print("IP Address: ");
+        Serial.print("IP: ");
         Serial.println(WiFi.localIP());
       } else {
         Serial.println("\nFailed to connect. Retrying...");
@@ -222,26 +172,32 @@ void connect() {
       }
     }
 
-    // 2. Connect to Server
-    Serial.print("Connecting to Server at ");
+    // 2. Connect to Server (SECURE)
+    Serial.print("Connecting to Secure Server at ");
     Serial.print(SERVER_IP);
     Serial.println("...");
 
+    // TLS Handshake happens here!
+    // It will verify the Server Cert against root_ca_cert
+    // Note: Use setCACert() in setup()
     if (client.connect(SERVER_IP, SERVER_PORT)) {
-      Serial.println("Connected to TCP Server.");
-
-      // 3. Secure Handshake
-      if (SessionHandshake()) {
-        return;
-      } else {
-        Serial.println("Handshake Failed. Retrying...");
-      }
-
+      Serial.println("Connected to Secure Server (Verified)!");
+      Serial.println("Transport Layer: TLS 1.2/1.3");
     } else {
-      Serial.println("Connection failed.");
+      Serial.println("Connection Failed! (Check Certs or IP)");
+      char err_buf[100];
+      client.lastError(err_buf, 100);
+      Serial.print("TLS Error Code: ");
+      Serial.println(err_buf);
     }
 
-    // If we reach here, connection failed. Loop restarts with WiFi disconnect.
+    if (client.connected()) {
+      // Main Loop inside function or return to main loop?
+      // Let's use the main loop() to handle traffic
+      return;
+    }
+
+    // If we reach here, connection failed. Loop restarts.
     delay(1000);
   }
 }
@@ -253,146 +209,117 @@ void loop() {
     connect();
   }
 
-  // --- Read from Server ---
+  // --- Read from Server (Decrypted by TLS) ---
   while (client.available()) {
     String line = client.readStringUntil('\n');
     line.trim();
     if (line.length() == 0)
       continue;
 
-    int sep = line.indexOf(':');
-    if (sep != -1) {
-      // Decrypt
-      String nonceHex = line.substring(0, sep);
-      String cipherHex = line.substring(sep + 1);
-      unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
-      sodium_hex2bin(nonce, sizeof(nonce), nonceHex.c_str(), nonceHex.length(),
-                     NULL, NULL, NULL);
-      int cipherLen = cipherHex.length() / 2;
-      unsigned char *ciphertext = (unsigned char *)malloc(cipherLen);
-      sodium_hex2bin(ciphertext, cipherLen, cipherHex.c_str(),
-                     cipherHex.length(), NULL, NULL, NULL);
-      unsigned char *decrypted = (unsigned char *)malloc(
-          cipherLen - crypto_aead_chacha20poly1305_ietf_ABYTES + 1);
-      unsigned long long decrypted_len;
+    // Serial.println("[RX]: " + line); // Debug Removed/Silenced
+    // Only print if NOT a challenge (cleaner UI)
+    bool likelyChallenge = (line.length() == 64);
+    if (!likelyChallenge)
+      Serial.println(line); // Print Server Msg (Menu, etc)
 
-      if (crypto_aead_chacha20poly1305_ietf_decrypt(decrypted, &decrypted_len,
-                                                    NULL, ciphertext, cipherLen,
-                                                    NULL, 0, nonce, rx) == 0) {
-        decrypted[decrypted_len] = '\0';
-        String plain = String((char *)decrypted);
-        Serial.println(plain);
+    // Check logic for authentication errors
+    // if (line.indexOf("Error: User") != -1 || line.startsWith("Auth Failed"))
+    // {
+    //   // Menu is sent by server, no need to print local help
+    // }
 
-        // Check logic for authentication errors
-        if (plain.indexOf("Error: User not found.") != -1 ||
-            plain.indexOf("Error: Invalid Username Format.") != -1 ||
-            plain.startsWith("Auth Failed")) {
-          printAuthHelp();
-        }
-
-        // Check if this is a Challenge (Random Hex String of 64 chars = 32
-        // bytes)
-        if (plain.length() == 64 && hasIdentity) {
-          bool isHex = true;
-          for (char c : plain) {
-            if (!isxdigit(c))
-              isHex = false;
-          }
-
-          if (isHex) {
-            Serial.println("Received Challenge! Genering ZKP Proof...");
-            unsigned char challenge[32];
-            sodium_hex2bin(challenge, sizeof(challenge), plain.c_str(),
-                           plain.length(), NULL, NULL, NULL);
-
-            unsigned char sig[crypto_sign_BYTES];
-            crypto_sign_detached(sig, NULL, challenge, sizeof(challenge),
-                                 user_sk);
-
-            char sigHex[crypto_sign_BYTES * 2 + 1];
-            sodium_bin2hex(sigHex, sizeof(sigHex), sig, sizeof(sig));
-
-            sendEncrypted(String(sigHex));
-            Serial.println("Proof Sent.");
-          }
-        }
-
-      } else {
-        Serial.println("[Decryption Error]");
+    // Challenge Response Logic (App Layer Auth)
+    // Check if this is a Challenge (Random Hex String of 64 chars)
+    if (line.length() == 64 && hasIdentity) {
+      bool isHex = true;
+      for (char c : line) {
+        if (!isxdigit(c))
+          isHex = false;
       }
-      free(ciphertext);
-      free(decrypted);
-    } else {
-      Serial.println("[RAW]: " + line);
+
+      if (isHex) {
+        Serial.println("Received Challenge! Generating Proof...");
+        unsigned char challenge[32];
+        sodium_hex2bin(challenge, sizeof(challenge), line.c_str(),
+                       line.length(), NULL, NULL, NULL);
+
+        unsigned char sig[crypto_sign_BYTES];
+        crypto_sign_detached(sig, NULL, challenge, sizeof(challenge), user_sk);
+
+        char sigHex[crypto_sign_BYTES * 2 + 1];
+        sodium_bin2hex(sigHex, sizeof(sigHex), sig, sizeof(sig));
+
+        // Send Plaintext (Protected by TLS)
+        client.println(String(sigHex));
+        Serial.println("Proof Sent.");
+      }
     }
   }
 
-  // --- Read from Serial ---
+  // --- Read from Serial (Send to Server) ---
   if (Serial.available()) {
     String input = Serial.readStringUntil('\n');
     input.trim();
     if (input.length() > 0) {
-      if (isSecure) {
-        // Intercept REG and LOG to inject PK or Handle Flow
-        if (input.startsWith("REG ")) {
-          int sp1 = input.indexOf(' ');
-          int sp2 = input.indexOf(' ', sp1 + 1);
-          if (sp2 != -1) {
-            String u = input.substring(sp1 + 1, sp2);
-            String p = input.substring(sp2 + 1);
+      // Intercept REG and LOG to inject PK
+      if (input.startsWith("REG ")) {
+        int sp1 = input.indexOf(' ');
+        int sp2 = input.indexOf(' ', sp1 + 1);
+        if (sp2 != -1) {
+          String u = input.substring(sp1 + 1, sp2);
+          String p = input.substring(sp2 + 1);
 
-            // Get Real RFID UID
-            Serial.println("Scan RFID Tag to bind to User: " + u);
-            String uid = getRFIDUID();
-            Serial.println("Tag Read: " + uid);
+          // Get Real RFID UID
+          Serial.println("Scan RFID Tag to bind to the new user");
+          String uid = getRFIDUID();
+          // Serial.println("Tag Read: " + uid); // Removed
 
-            // Derive Identity
-            deriveIdentity(uid, p);
+          // Derive Identity
+          deriveIdentity(uid, p);
 
-            // Generate UID Hash for Uniqueness Check
-            unsigned char uidHash[crypto_generichash_BYTES];
-            crypto_generichash(uidHash, sizeof(uidHash),
-                               (const unsigned char *)uid.c_str(), uid.length(),
-                               NULL, 0);
-            char uidHashHex[crypto_generichash_BYTES * 2 + 1];
-            sodium_bin2hex(uidHashHex, sizeof(uidHashHex), uidHash,
-                           sizeof(uidHash));
+          // Generate UID Hash for Uniqueness Check
+          unsigned char uidHash[crypto_generichash_BYTES];
+          crypto_generichash(uidHash, sizeof(uidHash),
+                             (const unsigned char *)uid.c_str(), uid.length(),
+                             NULL, 0);
+          char uidHashHex[crypto_generichash_BYTES * 2 + 1];
+          sodium_bin2hex(uidHashHex, sizeof(uidHashHex), uidHash,
+                         sizeof(uidHash));
 
-            char pkHex[crypto_sign_PUBLICKEYBYTES * 2 + 1];
-            sodium_bin2hex(pkHex, sizeof(pkHex), user_pk, sizeof(user_pk));
+          char pkHex[crypto_sign_PUBLICKEYBYTES * 2 + 1];
+          sodium_bin2hex(pkHex, sizeof(pkHex), user_pk, sizeof(user_pk));
 
-            // Format: REG username pk_hex uid_hash_hex
-            String cmd =
-                "REG " + u + " " + String(pkHex) + " " + String(uidHashHex);
-            sendEncrypted(cmd);
-            Serial.println("Sent Public Key & Tag Hash for Registration.");
-          } else {
-            Serial.println("Use: REG user pass");
-          }
-        } else if (input.startsWith("LOG ")) {
-          int sp1 = input.indexOf(' ');
-          int sp2 = input.indexOf(' ', sp1 + 1);
-          if (sp2 != -1) {
-            String u = input.substring(sp1 + 1, sp2);
-            String p = input.substring(sp2 + 1);
-
-            // Get Real RFID UID
-            Serial.println("Scan RFID Tag for Login...");
-            String uid = getRFIDUID();
-            Serial.println("Tag Read: " + uid);
-
-            deriveIdentity(uid, p);
-
-            String cmd = "LOG " + u;
-            sendEncrypted(cmd);
-            Serial.println("Login Requested. Waiting for Challenge...");
-          } else {
-            Serial.println("Use: LOG user pass");
-          }
+          // Format: REG username pk_hex uid_hash_hex
+          String cmd =
+              "REG " + u + " " + String(pkHex) + " " + String(uidHashHex);
+          client.println(cmd); // TLS Send
+          Serial.println("Sent Registration Data (TLS Encrypted).");
         } else {
-          sendEncrypted(input);
+          Serial.println("Use: REG user pass");
+        }
+      } else if (input.startsWith("LOG ")) {
+        int sp1 = input.indexOf(' ');
+        int sp2 = input.indexOf(' ', sp1 + 1);
+        if (sp2 != -1) {
+          String u = input.substring(sp1 + 1, sp2);
+          String p = input.substring(sp2 + 1);
+
+          Serial.println("Scan RFID Tag for Login...");
+          String uid = getRFIDUID();
+
+          deriveIdentity(uid, p);
+
+          char pkHex[crypto_sign_PUBLICKEYBYTES * 2 + 1];
+          sodium_bin2hex(pkHex, sizeof(pkHex), user_pk, sizeof(user_pk));
+
+          String cmd = "LOG " + u + " " + String(pkHex);
+          client.println(cmd); // TLS Send
+          Serial.println("Login Requested (TLS Encrypted).");
+        } else {
+          Serial.println("Use: LOG user pass");
         }
       } else {
+        // Just forward command (NEW ENTRY etc.)
         client.println(input);
       }
     }

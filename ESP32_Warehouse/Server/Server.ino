@@ -1,57 +1,227 @@
 #include <SD.h>
 #include <SPI.h>
-#include <Sodium.h> // LibSodium
+#include <Sodium.h>
 #include <WiFi.h>
 
-// --- Configuration ---
+// --- WOLFSSL INCLUDES ---
+#include <wolfssl.h>
+#include <wolfssl/ssl.h>
+
 const char *AP_SSID = "ESP_Server_AP";
-const char *AP_PASS = "12345678";
-const int SERVER_PORT = 80;
+const char *AP_PASS = "PTO4GPk_D8D";
+const int SERVER_PORT = 443;
 const int MAX_QTY = 10000;
 
-// SD Card Pins (Default HSPI)
 const int SD_CS_PIN = 5;
-
-// Files
 const char *FILE_USERS = "/users.txt";
 const char *FILE_WAREHOUSE = "/warehouse.txt";
 
-// --- Globals ---
 WiFiServer server(SERVER_PORT);
+WOLFSSL_CTX *ctx = NULL;
 
-// Session State
-enum State { STATE_HANDSHAKE, STATE_AUTH, STATE_LOGGED_IN };
+// --- SERVER CERTIFICATES ---
+// Copied from your previous successful paste context
+const unsigned char server_cert_der[] = {
+    0x30, 0x82, 0x03, 0x86, 0x30, 0x82, 0x02, 0x6E, 0xA0, 0x03, 0x02, 0x01,
+    0x02, 0x02, 0x01, 0x01, 0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86,
+    0xF7, 0x0D, 0x01, 0x01, 0x0B, 0x05, 0x00, 0x30, 0x62, 0x31, 0x0B, 0x30,
+    0x09, 0x06, 0x03, 0x55, 0x04, 0x06, 0x13, 0x02, 0x49, 0x54, 0x31, 0x11,
+    0x30, 0x0F, 0x06, 0x03, 0x55, 0x04, 0x08, 0x0C, 0x08, 0x41, 0x76, 0x65,
+    0x6C, 0x6C, 0x69, 0x6E, 0x6F, 0x31, 0x11, 0x30, 0x0F, 0x06, 0x03, 0x55,
+    0x04, 0x07, 0x0C, 0x08, 0x41, 0x76, 0x65, 0x6C, 0x6C, 0x69, 0x6E, 0x6F,
+    0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x0A, 0x0C, 0x04, 0x77,
+    0x61, 0x72, 0x64, 0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x0B,
+    0x0C, 0x04, 0x77, 0x61, 0x72, 0x64, 0x31, 0x0F, 0x30, 0x0D, 0x06, 0x03,
+    0x55, 0x04, 0x03, 0x0C, 0x06, 0x4D, 0x79, 0x52, 0x6F, 0x6F, 0x74, 0x30,
+    0x1E, 0x17, 0x0D, 0x32, 0x36, 0x30, 0x31, 0x32, 0x32, 0x31, 0x35, 0x34,
+    0x35, 0x35, 0x31, 0x5A, 0x17, 0x0D, 0x32, 0x36, 0x30, 0x32, 0x32, 0x31,
+    0x31, 0x35, 0x34, 0x35, 0x35, 0x31, 0x5A, 0x30, 0x67, 0x31, 0x0B, 0x30,
+    0x09, 0x06, 0x03, 0x55, 0x04, 0x06, 0x13, 0x02, 0x49, 0x54, 0x31, 0x11,
+    0x30, 0x0F, 0x06, 0x03, 0x55, 0x04, 0x08, 0x0C, 0x08, 0x41, 0x76, 0x65,
+    0x6C, 0x6C, 0x69, 0x6E, 0x6F, 0x31, 0x11, 0x30, 0x0F, 0x06, 0x03, 0x55,
+    0x04, 0x07, 0x0C, 0x08, 0x41, 0x76, 0x65, 0x6C, 0x6C, 0x69, 0x6E, 0x6F,
+    0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x0A, 0x0C, 0x04, 0x77,
+    0x61, 0x72, 0x64, 0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x0B,
+    0x0C, 0x04, 0x77, 0x61, 0x72, 0x64, 0x31, 0x14, 0x30, 0x12, 0x06, 0x03,
+    0x55, 0x04, 0x03, 0x0C, 0x0B, 0x31, 0x39, 0x32, 0x2E, 0x31, 0x36, 0x38,
+    0x2E, 0x34, 0x2E, 0x31, 0x30, 0x82, 0x01, 0x22, 0x30, 0x0D, 0x06, 0x09,
+    0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03,
+    0x82, 0x01, 0x0F, 0x00, 0x30, 0x82, 0x01, 0x0A, 0x02, 0x82, 0x01, 0x01,
+    0x00, 0xA7, 0x23, 0x3B, 0x3D, 0xAE, 0xFC, 0xF7, 0x1A, 0x85, 0xEE, 0x45,
+    0x23, 0x37, 0x74, 0xF6, 0xB0, 0xD8, 0x11, 0x78, 0x9A, 0x87, 0x54, 0x63,
+    0xCD, 0xAA, 0x58, 0x1E, 0x9B, 0xBD, 0x28, 0x9D, 0xAE, 0x22, 0x50, 0x5E,
+    0xD1, 0x9C, 0xB9, 0x7F, 0x71, 0x9C, 0xE8, 0xB8, 0xFF, 0x99, 0x70, 0x51,
+    0x6F, 0xC1, 0x6D, 0xB1, 0x19, 0xDF, 0x92, 0x9D, 0x6F, 0x6C, 0x18, 0x96,
+    0xCA, 0x6E, 0xE9, 0x7C, 0xEE, 0xA4, 0xDB, 0xAA, 0x3C, 0x06, 0x04, 0xA7,
+    0x69, 0x8E, 0xD9, 0x69, 0x75, 0xE0, 0x1D, 0x0A, 0xE1, 0xC4, 0xC2, 0x88,
+    0xEE, 0xCA, 0xBA, 0x10, 0x64, 0x1E, 0x2F, 0x41, 0x6D, 0xB4, 0x84, 0x56,
+    0x87, 0x86, 0x30, 0x13, 0x15, 0xAD, 0xB0, 0x12, 0xD5, 0x0C, 0xB2, 0x73,
+    0x08, 0x3B, 0xB8, 0xEC, 0x56, 0x45, 0xA4, 0x66, 0x09, 0x4F, 0xCA, 0xA2,
+    0x1F, 0x51, 0x05, 0xA4, 0x6F, 0x00, 0xEC, 0x83, 0x35, 0x46, 0x06, 0x9F,
+    0x2B, 0x84, 0xB3, 0x80, 0x08, 0x61, 0x9A, 0x58, 0x0A, 0x5F, 0x1C, 0x5C,
+    0xCD, 0xBA, 0x4D, 0xED, 0x41, 0xB5, 0xE5, 0x2F, 0xCE, 0xB5, 0xEA, 0x98,
+    0x92, 0x94, 0x65, 0x9F, 0x91, 0xB6, 0x22, 0xC9, 0x1D, 0xCB, 0xCF, 0xDC,
+    0xDE, 0x00, 0x91, 0xB6, 0x76, 0x04, 0x11, 0x6C, 0x2F, 0xFA, 0x69, 0x57,
+    0x0E, 0xE4, 0x31, 0xDA, 0x8A, 0x93, 0x52, 0x39, 0x96, 0x1C, 0xC3, 0xA1,
+    0x24, 0x59, 0x21, 0x1C, 0xF2, 0x50, 0x43, 0x08, 0xF5, 0x6E, 0x30, 0x87,
+    0xD9, 0x42, 0x44, 0x0F, 0x52, 0x60, 0xCE, 0x8D, 0x14, 0x44, 0xB6, 0x78,
+    0x18, 0x1C, 0xB3, 0x0B, 0xD2, 0xE4, 0x69, 0xEF, 0xB0, 0x97, 0x0C, 0x0B,
+    0xD3, 0x33, 0x5F, 0x26, 0xA0, 0xC6, 0x5A, 0xDA, 0xE0, 0xD2, 0xA0, 0x87,
+    0x2C, 0x99, 0x09, 0x23, 0x14, 0x21, 0xFD, 0x85, 0x10, 0x4E, 0x8A, 0x3A,
+    0x4B, 0x06, 0xE9, 0xFF, 0xD5, 0x02, 0x03, 0x01, 0x00, 0x01, 0xA3, 0x42,
+    0x30, 0x40, 0x30, 0x1D, 0x06, 0x03, 0x55, 0x1D, 0x0E, 0x04, 0x16, 0x04,
+    0x14, 0xB9, 0x26, 0x82, 0x34, 0xC4, 0x5E, 0xFC, 0x25, 0x42, 0x72, 0x9A,
+    0xF9, 0xD5, 0x62, 0xD2, 0x6A, 0x56, 0x0B, 0x35, 0x47, 0x30, 0x1F, 0x06,
+    0x03, 0x55, 0x1D, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x50, 0x24,
+    0x72, 0x7E, 0x42, 0x1E, 0x26, 0x59, 0xB1, 0xD2, 0xF6, 0x77, 0x3D, 0x21,
+    0x41, 0xE8, 0x91, 0x29, 0x4C, 0xCC, 0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86,
+    0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B, 0x05, 0x00, 0x03, 0x82, 0x01,
+    0x01, 0x00, 0xA8, 0xBA, 0xA0, 0x73, 0xD1, 0x24, 0x16, 0x08, 0xA0, 0x5D,
+    0x43, 0x0B, 0x84, 0x04, 0x08, 0xDF, 0x06, 0x8B, 0x35, 0x52, 0x5D, 0x09,
+    0x63, 0xA8, 0xB3, 0xF9, 0x38, 0xD2, 0x34, 0xC5, 0x76, 0xD0, 0x33, 0x2D,
+    0x0E, 0x9B, 0x86, 0xB9, 0x37, 0x59, 0x61, 0xD9, 0x53, 0x26, 0x8D, 0xA2,
+    0xF3, 0x6C, 0x90, 0xE0, 0x41, 0xB5, 0x61, 0xCB, 0x97, 0x26, 0x80, 0xB1,
+    0x28, 0x59, 0x37, 0x51, 0x5F, 0xD6, 0xFE, 0x3D, 0x9E, 0x78, 0x79, 0x9A,
+    0x8C, 0x36, 0x35, 0xBF, 0x8C, 0x62, 0xCA, 0x94, 0xFA, 0x25, 0x0D, 0x45,
+    0xA2, 0xB3, 0xD3, 0xE2, 0xB4, 0xD7, 0x18, 0xC8, 0x9D, 0xCE, 0x56, 0xB2,
+    0xD8, 0xCE, 0xF6, 0xD6, 0x1C, 0x53, 0x49, 0xF1, 0x27, 0x0F, 0x34, 0x6C,
+    0xC3, 0xD3, 0x54, 0x67, 0xD9, 0x5C, 0xD8, 0x41, 0xE6, 0xF7, 0x82, 0x25,
+    0x80, 0x58, 0xF0, 0x47, 0x67, 0x49, 0x2D, 0x68, 0x84, 0xEB, 0x4E, 0x7B,
+    0xD8, 0xA6, 0x2B, 0x0D, 0xB2, 0x41, 0x67, 0x98, 0x58, 0xCB, 0xFA, 0x57,
+    0xF2, 0xA3, 0x3F, 0x89, 0xE7, 0x61, 0xA2, 0x74, 0x91, 0xC5, 0xDF, 0xE6,
+    0xAA, 0x25, 0xF1, 0xAF, 0x26, 0xDD, 0x25, 0x73, 0x77, 0x4D, 0x99, 0x70,
+    0x91, 0xB7, 0x93, 0xF0, 0xA4, 0xFC, 0xBA, 0xBE, 0x6E, 0x43, 0x91, 0x35,
+    0x4E, 0x26, 0xE7, 0x17, 0x4F, 0x0B, 0x8C, 0x05, 0x58, 0x30, 0xE1, 0x86,
+    0x90, 0x68, 0xAE, 0xB9, 0x73, 0x05, 0x74, 0x36, 0x3A, 0x3E, 0x83, 0x44,
+    0xAA, 0x42, 0x0D, 0x3F, 0x73, 0xDD, 0x51, 0x77, 0xFB, 0x5F, 0x70, 0x82,
+    0x93, 0x58, 0xD7, 0xA1, 0x4B, 0x22, 0xE9, 0xAC, 0x8E, 0x27, 0xFB, 0xBE,
+    0x0C, 0xA4, 0x45, 0x49, 0x15, 0x7D, 0xD0, 0x08, 0xC0, 0xF4, 0x53, 0x1F,
+    0x45, 0x7C, 0x78, 0x00, 0xF5, 0x47, 0x27, 0xD2, 0x1A, 0x0F, 0x31, 0xD0,
+    0xA1, 0xDB, 0xF3, 0x77, 0xD7, 0x43};
 
-// Crypto Globals
-unsigned char server_pk[crypto_kx_PUBLICKEYBYTES];
-unsigned char server_sk[crypto_kx_SECRETKEYBYTES];
-unsigned char client_pk[crypto_kx_PUBLICKEYBYTES];
-unsigned char rx[crypto_kx_SESSIONKEYBYTES]; // Receive key
-unsigned char tx[crypto_kx_SESSIONKEYBYTES]; // Transmit key
-bool isSecure = false;
+const unsigned char server_key_der[] = {
+    0x30, 0x82, 0x04, 0xBD, 0x02, 0x01, 0x00, 0x30, 0x0D, 0x06, 0x09, 0x2A,
+    0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01, 0x05, 0x00, 0x04, 0x82,
+    0x04, 0xA7, 0x30, 0x82, 0x04, 0xA3, 0x02, 0x01, 0x00, 0x02, 0x82, 0x01,
+    0x01, 0x00, 0xA7, 0x23, 0x3B, 0x3D, 0xAE, 0xFC, 0xF7, 0x1A, 0x85, 0xEE,
+    0x45, 0x23, 0x37, 0x74, 0xF6, 0xB0, 0xD8, 0x11, 0x78, 0x9A, 0x87, 0x54,
+    0x63, 0xCD, 0xAA, 0x58, 0x1E, 0x9B, 0xBD, 0x28, 0x9D, 0xAE, 0x22, 0x50,
+    0x5E, 0xD1, 0x9C, 0xB9, 0x7F, 0x71, 0x9C, 0xE8, 0xB8, 0xFF, 0x99, 0x70,
+    0x51, 0x6F, 0xC1, 0x6D, 0xB1, 0x19, 0xDF, 0x92, 0x9D, 0x6F, 0x6C, 0x18,
+    0x96, 0xCA, 0x6E, 0xE9, 0x7C, 0xEE, 0xA4, 0xDB, 0xAA, 0x3C, 0x06, 0x04,
+    0xA7, 0x69, 0x8E, 0xD9, 0x69, 0x75, 0xE0, 0x1D, 0x0A, 0xE1, 0xC4, 0xC2,
+    0x88, 0xEE, 0xCA, 0xBA, 0x10, 0x64, 0x1E, 0x2F, 0x41, 0x6D, 0xB4, 0x84,
+    0x56, 0x87, 0x86, 0x30, 0x13, 0x15, 0xAD, 0xB0, 0x12, 0xD5, 0x0C, 0xB2,
+    0x73, 0x08, 0x3B, 0xB8, 0xEC, 0x56, 0x45, 0xA4, 0x66, 0x09, 0x4F, 0xCA,
+    0xA2, 0x1F, 0x51, 0x05, 0xA4, 0x6F, 0x00, 0xEC, 0x83, 0x35, 0x46, 0x06,
+    0x9F, 0x2B, 0x84, 0xB3, 0x80, 0x08, 0x61, 0x9A, 0x58, 0x0A, 0x5F, 0x1C,
+    0x5C, 0xCD, 0xBA, 0x4D, 0xED, 0x41, 0xB5, 0xE5, 0x2F, 0xCE, 0xB5, 0xEA,
+    0x98, 0x92, 0x94, 0x65, 0x9F, 0x91, 0xB6, 0x22, 0xC9, 0x1D, 0xCB, 0xCF,
+    0xDC, 0xDE, 0x00, 0x91, 0xB6, 0x76, 0x04, 0x11, 0x6C, 0x2F, 0xFA, 0x69,
+    0x57, 0x0E, 0xE4, 0x31, 0xDA, 0x8A, 0x93, 0x52, 0x39, 0x96, 0x1C, 0xC3,
+    0xA1, 0x24, 0x59, 0x21, 0x1C, 0xF2, 0x50, 0x43, 0x08, 0xF5, 0x6E, 0x30,
+    0x87, 0xD9, 0x42, 0x44, 0x0F, 0x52, 0x60, 0xCE, 0x8D, 0x14, 0x44, 0xB6,
+    0x78, 0x18, 0x1C, 0xB3, 0x0B, 0xD2, 0xE4, 0x69, 0xEF, 0xB0, 0x97, 0x0C,
+    0x0B, 0xD3, 0x33, 0x5F, 0x26, 0xA0, 0xC6, 0x5A, 0xDA, 0xE0, 0xD2, 0xA0,
+    0x87, 0x2C, 0x99, 0x09, 0x23, 0x14, 0x21, 0xFD, 0x85, 0x10, 0x4E, 0x8A,
+    0x3A, 0x4B, 0x06, 0xE9, 0xFF, 0xD5, 0x02, 0x03, 0x01, 0x00, 0x01, 0x02,
+    0x82, 0x01, 0x00, 0x23, 0x67, 0xD0, 0x35, 0xD9, 0xEA, 0xD6, 0x81, 0xB4,
+    0xDB, 0x6B, 0xA3, 0xF1, 0x2C, 0x82, 0xD1, 0xA5, 0x83, 0xD5, 0xF3, 0x8E,
+    0x35, 0x6F, 0x4A, 0xF3, 0x09, 0xE5, 0xBA, 0x02, 0x11, 0x27, 0x8D, 0xEA,
+    0xD0, 0xF1, 0xB5, 0x1F, 0xA9, 0x1F, 0xF9, 0x36, 0x4F, 0x0A, 0x59, 0x82,
+    0xEC, 0x8B, 0x23, 0xCC, 0x6A, 0xEB, 0x38, 0x5A, 0xE7, 0x19, 0x18, 0xB0,
+    0x62, 0x69, 0x17, 0x0A, 0xF5, 0xC5, 0x34, 0x5C, 0x91, 0xF7, 0xF6, 0xED,
+    0x23, 0x71, 0x3F, 0x68, 0x36, 0x60, 0x23, 0xCB, 0x4C, 0xFB, 0xB0, 0x25,
+    0xD9, 0x3B, 0xDE, 0xB1, 0xED, 0x46, 0x69, 0x9F, 0x07, 0x4D, 0xA9, 0xEA,
+    0xB2, 0x9A, 0x0D, 0xED, 0x7C, 0x23, 0x9E, 0xD5, 0x03, 0x56, 0x89, 0xF1,
+    0x3D, 0xA0, 0x26, 0x9F, 0x58, 0x26, 0x20, 0x84, 0x72, 0x35, 0xF7, 0x45,
+    0x02, 0xDC, 0xE3, 0x1B, 0x6B, 0xC1, 0x90, 0x8E, 0x36, 0x8B, 0xF8, 0x96,
+    0x6B, 0x34, 0xC3, 0x34, 0x2E, 0x79, 0x66, 0xA4, 0xA8, 0x9A, 0x50, 0xF5,
+    0x2E, 0xF7, 0x6B, 0xAB, 0x6F, 0x43, 0x51, 0x84, 0x47, 0x9E, 0xF7, 0xF6,
+    0x10, 0xB3, 0x48, 0xE5, 0x0B, 0x03, 0x41, 0x66, 0x30, 0x92, 0xB1, 0x75,
+    0xA3, 0x0E, 0xF5, 0xE0, 0xF1, 0xFF, 0xD0, 0x49, 0x74, 0x12, 0x76, 0xE5,
+    0x98, 0x88, 0xC3, 0x42, 0x7E, 0xE6, 0x12, 0x34, 0x7B, 0x38, 0x91, 0xFA,
+    0xE1, 0xED, 0x96, 0xA0, 0x80, 0xEE, 0x0A, 0xB9, 0x35, 0xF3, 0xE6, 0xB6,
+    0x1C, 0x73, 0xD2, 0x1C, 0xF9, 0x35, 0x55, 0xA4, 0x26, 0x91, 0xA4, 0x64,
+    0x62, 0x28, 0x81, 0xC8, 0x3D, 0x1B, 0x2E, 0x46, 0x73, 0x25, 0xDD, 0xAD,
+    0xDE, 0xFB, 0x14, 0xFE, 0xF5, 0x2A, 0x03, 0x9D, 0xFD, 0x78, 0xA5, 0xE7,
+    0xA4, 0xEA, 0xFC, 0xBC, 0xB0, 0x6C, 0xAD, 0xC1, 0xA9, 0x25, 0x7F, 0x9B,
+    0x50, 0x87, 0xD3, 0xEA, 0x56, 0x06, 0x45, 0x02, 0x81, 0x81, 0x00, 0xD3,
+    0x7D, 0x1F, 0xDF, 0xC7, 0x5F, 0x5F, 0xE5, 0x2E, 0x2C, 0x02, 0xFF, 0xBC,
+    0xD0, 0x81, 0xCE, 0xF0, 0xB2, 0x3B, 0xEB, 0x72, 0x77, 0x20, 0x81, 0xB6,
+    0xAA, 0x64, 0x2E, 0x2D, 0x43, 0x92, 0x07, 0x29, 0x93, 0x43, 0xF0, 0x9C,
+    0xBA, 0x33, 0xBF, 0xFC, 0x31, 0x7D, 0x19, 0xEB, 0x6B, 0x69, 0xB6, 0x3D,
+    0x8C, 0x8A, 0x74, 0xAA, 0xE2, 0xB5, 0xAF, 0x13, 0x02, 0x17, 0x8C, 0x4D,
+    0x80, 0x4C, 0x48, 0x84, 0x6D, 0x6A, 0x32, 0xF4, 0xB1, 0xFB, 0xD6, 0xF6,
+    0xCE, 0xEA, 0x07, 0x6E, 0x75, 0x17, 0x00, 0xE0, 0x2F, 0x3C, 0xDC, 0xF2,
+    0x29, 0xCF, 0x23, 0x62, 0x03, 0xBB, 0x96, 0x56, 0x09, 0x1C, 0x82, 0x39,
+    0xF4, 0xA4, 0xF4, 0x5C, 0x26, 0xBC, 0x80, 0xCE, 0x3C, 0xB5, 0xF0, 0x49,
+    0x8B, 0x8A, 0x8E, 0xA3, 0x7B, 0xFD, 0xDE, 0x2C, 0xDF, 0x40, 0x04, 0x7D,
+    0xF8, 0xA7, 0x49, 0xB0, 0x46, 0x6C, 0x03, 0x02, 0x81, 0x81, 0x00, 0xCA,
+    0x50, 0x7F, 0x15, 0xE0, 0xBD, 0x2F, 0x54, 0x6A, 0x69, 0xFB, 0x19, 0xA7,
+    0x38, 0x9C, 0x90, 0x93, 0x4D, 0xDC, 0xE0, 0x9F, 0xF0, 0xA0, 0xA6, 0xB0,
+    0x0E, 0xDA, 0x6E, 0x89, 0xE9, 0x87, 0x83, 0x54, 0xB4, 0xF9, 0x41, 0x2A,
+    0xA6, 0x45, 0xE9, 0x85, 0x4A, 0x78, 0x32, 0x87, 0x2B, 0x8D, 0x66, 0xD5,
+    0xF8, 0x36, 0x6E, 0xAE, 0xC4, 0x93, 0xA4, 0x56, 0x68, 0xEE, 0xFE, 0x42,
+    0x08, 0xBD, 0x4F, 0x5F, 0x81, 0xB2, 0xA4, 0xAB, 0xAC, 0xD6, 0x86, 0x5F,
+    0xDE, 0x16, 0x25, 0xC0, 0x33, 0x76, 0x19, 0x61, 0x90, 0xD7, 0x87, 0x38,
+    0xC2, 0xAC, 0x17, 0x82, 0xEC, 0xC3, 0xFE, 0xA4, 0x5E, 0x7E, 0xE5, 0x58,
+    0xC8, 0x63, 0x59, 0x51, 0x37, 0x1B, 0x18, 0x89, 0xB2, 0xD0, 0x12, 0x96,
+    0xA3, 0x75, 0xA9, 0x90, 0x55, 0x0B, 0x6D, 0xB6, 0x97, 0x31, 0xF2, 0x71,
+    0xEA, 0x1E, 0x9F, 0x91, 0x47, 0x59, 0x47, 0x02, 0x81, 0x81, 0x00, 0x8D,
+    0x0E, 0x54, 0x77, 0x0D, 0xE4, 0x07, 0xF2, 0xB4, 0xB3, 0xF8, 0x20, 0x18,
+    0x10, 0x3D, 0xB4, 0x07, 0x87, 0xE9, 0x3D, 0x25, 0x70, 0x5D, 0x07, 0x07,
+    0x0D, 0x68, 0x99, 0xFF, 0xE8, 0xA4, 0x7A, 0x10, 0x79, 0xBF, 0x83, 0xB9,
+    0x14, 0xDC, 0x35, 0x3D, 0x80, 0xC8, 0x7E, 0xC4, 0x2D, 0x35, 0x29, 0xAE,
+    0xAD, 0x91, 0x1F, 0x35, 0x66, 0xD6, 0x64, 0xF9, 0xD9, 0x98, 0x59, 0x24,
+    0xCB, 0xE0, 0x95, 0x31, 0x76, 0x44, 0xB1, 0xCD, 0xD0, 0xF4, 0x36, 0xB1,
+    0x10, 0xDA, 0xB8, 0xB0, 0x2C, 0x7A, 0x76, 0x44, 0x10, 0x5D, 0x98, 0xC4,
+    0x0F, 0xAC, 0xAF, 0x5D, 0xCD, 0x3D, 0x8D, 0x8C, 0xBE, 0xB0, 0xFC, 0x0E,
+    0xA9, 0xA4, 0x67, 0xB3, 0x1A, 0xC6, 0xF9, 0x66, 0x14, 0xCA, 0x08, 0x85,
+    0x15, 0x04, 0x0A, 0x14, 0xF2, 0x3B, 0x25, 0xB7, 0x6A, 0x03, 0xA9, 0xBB,
+    0x57, 0x60, 0x44, 0x5E, 0xC4, 0xE9, 0x7F, 0x02, 0x81, 0x80, 0x53, 0x8C,
+    0x1A, 0x6F, 0x36, 0x77, 0xE9, 0xEB, 0xBA, 0x66, 0x39, 0xC3, 0xC6, 0x42,
+    0xA2, 0xA5, 0x31, 0xAF, 0x9D, 0xDF, 0x45, 0x2D, 0x61, 0xAA, 0x74, 0x5A,
+    0x2D, 0xEA, 0x28, 0x19, 0xC0, 0x54, 0x83, 0xCE, 0x98, 0x80, 0x48, 0xD4,
+    0x91, 0x5A, 0x76, 0x28, 0xE2, 0xAA, 0x3B, 0x17, 0xC9, 0x35, 0x06, 0x77,
+    0x92, 0x42, 0xF2, 0xF9, 0x4A, 0xDF, 0x3A, 0xAF, 0xEA, 0xC2, 0x25, 0x12,
+    0xE6, 0xDA, 0xB8, 0x5E, 0x1F, 0x1F, 0xD1, 0xA5, 0x76, 0x91, 0xD7, 0x55,
+    0x27, 0x60, 0x3F, 0x97, 0x00, 0xD6, 0x4A, 0x6C, 0x3E, 0x15, 0x21, 0x63,
+    0x83, 0x1D, 0xD2, 0x7B, 0x64, 0x14, 0xEC, 0x5B, 0xF9, 0x9B, 0x4C, 0xA6,
+    0xB4, 0x20, 0x56, 0x61, 0xA3, 0x56, 0xE6, 0xC6, 0x69, 0x16, 0xC4, 0x0E,
+    0x8C, 0xB0, 0x91, 0x62, 0x0D, 0x6E, 0x29, 0x51, 0x16, 0xD7, 0x40, 0x23,
+    0xA6, 0xB1, 0xCE, 0x94, 0xE0, 0x51, 0x02, 0x81, 0x80, 0x5B, 0xB7, 0x1E,
+    0x32, 0x39, 0x56, 0xD7, 0x38, 0xFA, 0x37, 0xEB, 0xA0, 0xFD, 0x17, 0x62,
+    0xD7, 0xDD, 0x4C, 0xFC, 0x94, 0xA0, 0xC6, 0x0A, 0x77, 0x74, 0x8D, 0x56,
+    0x79, 0x90, 0x9A, 0x83, 0x09, 0x2E, 0xB1, 0xD5, 0x37, 0xF3, 0x8E, 0xAB,
+    0x59, 0xD0, 0x35, 0x9C, 0xFF, 0x92, 0x0F, 0x35, 0x98, 0xE4, 0x31, 0xDD,
+    0xCB, 0x74, 0x9F, 0x14, 0xA9, 0x4E, 0x66, 0x92, 0x24, 0xF9, 0x84, 0xE2,
+    0x1C, 0x41, 0x84, 0x23, 0x5E, 0xAA, 0x40, 0x76, 0x1F, 0xE8, 0x76, 0x42,
+    0xA6, 0xBC, 0x4F, 0xCE, 0x74, 0x71, 0xD1, 0x51, 0xD7, 0xCC, 0x73, 0x06,
+    0x08, 0xD8, 0xF9, 0xFE, 0x0B, 0xEC, 0xAC, 0xC8, 0xCE, 0x43, 0x2C, 0x24,
+    0x32, 0x9B, 0x1A, 0x00, 0xF1, 0x90, 0x76, 0x9D, 0x11, 0x87, 0x30, 0x47,
+    0xED, 0x0D, 0x93, 0xA6, 0xA3, 0x55, 0xB0, 0x5E, 0x37, 0xB4, 0x69, 0xB8,
+    0xFD, 0x6C, 0xBF, 0x06, 0x93};
 
-// Storage Key (Simulated Secure Element)
+// Storage Key
 unsigned char storage_key[crypto_aead_chacha20poly1305_ietf_KEYBYTES];
 
 struct ClientSession {
-  State state;
   String username;
+  bool loggedIn;
 };
 
 // --- Helper Functions ---
-
-// Validator for Name (User or Product): Alphanumeric, 5-50 chars
 bool isValidName(String s) {
-  if (s.length() < 5 || s.length() > 50)
+  if (s.length() < 2 || s.length() > 50) // Allow shorter names like "TV"
     return false;
   for (unsigned int i = 0; i < s.length(); i++) {
     if (!isAlphaNumeric(s.charAt(i)))
-      return false;
+      return false; // Strict Alphanumeric
   }
   return true;
 }
 
-// Validator for Number
 bool isValidNumber(String s) {
   if (s.length() == 0)
     return false;
@@ -67,19 +237,76 @@ bool isValidNumber(String s) {
   return true;
 }
 
-// Initialize SD Card
-bool initSD() {
-  if (!SD.begin(SD_CS_PIN)) {
-    Serial.println("SD Card Mount Failed");
-    return false;
+// ... (Crypto Helpers omitted as they are unchanged) ...
+
+// (CRUD Helpers moved to correct location below)
+
+// --- Helper Functions ---
+String hashData(String data) {
+  unsigned char hash[crypto_generichash_BYTES];
+  crypto_generichash(hash, sizeof(hash), (const unsigned char *)data.c_str(),
+                     data.length(), NULL, 0);
+  char hex[crypto_generichash_BYTES * 2 + 1];
+  sodium_bin2hex(hex, sizeof(hex), hash, sizeof(hash));
+  return String(hex);
+}
+// --- SD Crypto Helpers ---
+String encryptLine(String plain, const unsigned char *key) {
+  unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
+  randombytes_buf(nonce, sizeof(nonce));
+  unsigned long long ciphertext_len;
+  int msg_len = plain.length();
+  unsigned char *ciphertext = (unsigned char *)malloc(
+      msg_len + crypto_aead_chacha20poly1305_ietf_ABYTES);
+  crypto_aead_chacha20poly1305_ietf_encrypt(
+      ciphertext, &ciphertext_len, (const unsigned char *)plain.c_str(),
+      msg_len, NULL, 0, NULL, nonce, key);
+  char *hex_nonce = (char *)malloc(sizeof(nonce) * 2 + 1);
+  sodium_bin2hex(hex_nonce, sizeof(nonce) * 2 + 1, nonce, sizeof(nonce));
+  char *hex_cipher = (char *)malloc(ciphertext_len * 2 + 1);
+  sodium_bin2hex(hex_cipher, ciphertext_len * 2 + 1, ciphertext,
+                 ciphertext_len);
+  String res = String(hex_nonce) + ":" + String(hex_cipher);
+  free(ciphertext);
+  free(hex_nonce);
+  free(hex_cipher);
+  return res;
+}
+
+String decryptLine(String line, const unsigned char *key) {
+  int sep = line.indexOf(':');
+  if (sep == -1)
+    return "";
+  String nonceHex = line.substring(0, sep);
+  String cipherHex = line.substring(sep + 1);
+  unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
+  sodium_hex2bin(nonce, sizeof(nonce), nonceHex.c_str(), nonceHex.length(),
+                 NULL, NULL, NULL);
+  int cipherLen = cipherHex.length() / 2;
+  unsigned char *ciphertext = (unsigned char *)malloc(cipherLen);
+  sodium_hex2bin(ciphertext, cipherLen, cipherHex.c_str(), cipherHex.length(),
+                 NULL, NULL, NULL);
+  unsigned char *decrypted = (unsigned char *)malloc(
+      cipherLen - crypto_aead_chacha20poly1305_ietf_ABYTES + 1);
+  unsigned long long decrypted_len;
+  String res = "";
+  if (crypto_aead_chacha20poly1305_ietf_decrypt(decrypted, &decrypted_len, NULL,
+                                                ciphertext, cipherLen, NULL, 0,
+                                                nonce, key) == 0) {
+    decrypted[decrypted_len] = '\0';
+    res = String((char *)decrypted);
   }
+  free(ciphertext);
+  free(decrypted);
+  return res;
+}
 
-  // Set fixed storage key for academic demo (normally from Secure Boot / Efuse)
-  // "AcademicSecureKey123456789012345" (32 bytes)
-  const char *k = "AcademicSecureKey123456789012345";
+// --- SD Management ---
+bool initSD() {
+  if (!SD.begin(SD_CS_PIN))
+    return false;
+  const char *k = "SPWR9gcWqRx9rrNCPTq5vyFEUMrqDLPf";
   memcpy(storage_key, k, sizeof(storage_key));
-
-  // Create files if they don't exist
   if (!SD.exists(FILE_USERS)) {
     File f = SD.open(FILE_USERS, FILE_WRITE);
     if (f)
@@ -93,131 +320,43 @@ bool initSD() {
   return true;
 }
 
-// --- Crypto Storage Helpers ---
+// getUserPK removed as it is incompatible with per-user encryption
+// and replaced by findUser logic.
 
-String encryptLine(String plain) {
-  unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
-  randombytes_buf(nonce, sizeof(nonce));
-
-  unsigned long long ciphertext_len;
-  int msg_len = plain.length();
-  unsigned char *ciphertext = (unsigned char *)malloc(
-      msg_len + crypto_aead_chacha20poly1305_ietf_ABYTES);
-
-  crypto_aead_chacha20poly1305_ietf_encrypt(
-      ciphertext, &ciphertext_len, (const unsigned char *)plain.c_str(),
-      msg_len, NULL, 0, NULL, nonce, storage_key);
-
-  char *hex_nonce = (char *)malloc(sizeof(nonce) * 2 + 1);
-  sodium_bin2hex(hex_nonce, sizeof(nonce) * 2 + 1, nonce, sizeof(nonce));
-
-  char *hex_cipher = (char *)malloc(ciphertext_len * 2 + 1);
-  sodium_bin2hex(hex_cipher, ciphertext_len * 2 + 1, ciphertext,
-                 ciphertext_len);
-
-  String res = String(hex_nonce) + ":" + String(hex_cipher);
-
-  free(ciphertext);
-  free(hex_nonce);
-  free(hex_cipher);
-  return res;
-}
-
-String decryptLine(String line) {
-  int sep = line.indexOf(':');
-  if (sep == -1)
-    return ""; // Not encrypted or invalid
-
-  String nonceHex = line.substring(0, sep);
-  String cipherHex = line.substring(sep + 1);
-
-  unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
-  sodium_hex2bin(nonce, sizeof(nonce), nonceHex.c_str(), nonceHex.length(),
-                 NULL, NULL, NULL);
-
-  int cipherLen = cipherHex.length() / 2;
-  unsigned char *ciphertext = (unsigned char *)malloc(cipherLen);
-  sodium_hex2bin(ciphertext, cipherLen, cipherHex.c_str(), cipherHex.length(),
-                 NULL, NULL, NULL);
-
-  unsigned char *decrypted = (unsigned char *)malloc(
-      cipherLen - crypto_aead_chacha20poly1305_ietf_ABYTES + 1);
-  unsigned long long decrypted_len;
-
-  String res = "";
-  if (crypto_aead_chacha20poly1305_ietf_decrypt(decrypted, &decrypted_len, NULL,
-                                                ciphertext, cipherLen, NULL, 0,
-                                                nonce, storage_key) == 0) {
-    decrypted[decrypted_len] = '\0';
-    res = String((char *)decrypted);
-  }
-
-  free(ciphertext);
-  free(decrypted);
-  return res;
-}
-
-// Get User Public Key (Hex) if exists
-// Returns empty string if not found
-String getUserPK(String u) {
-  File file = SD.open(FILE_USERS);
-  if (!file)
-    return "";
-
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0)
-      continue;
-
-    // Decrypt Line
-    String plain = decryptLine(line);
-    if (plain.length() == 0)
-      continue;
-
-    int sep = plain.indexOf(';');
-    if (sep == -1)
-      continue;
-
-    String f_user = plain.substring(0, sep);
-    String f_pk = plain.substring(sep + 1);
-
-    if (f_user == u) {
-      file.close();
-      return f_pk;
-    }
-  }
-  file.close();
-  return "";
-}
-
-// Helper to check if a specific tag hash is already registered
-bool isTagRegistered(String tagHash) {
+// New Logic: Login by Hash matching & Symmetric Decryption Verification
+bool findUser(String targetUser, String pk_hex) {
   File file = SD.open(FILE_USERS);
   if (!file)
     return false;
 
+  unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+  sodium_hex2bin(pk, sizeof(pk), pk_hex.c_str(), pk_hex.length(), NULL, NULL,
+                 NULL);
+
+  String targetHash = hashData(targetUser);
+
   while (file.available()) {
     String line = file.readStringUntil('\n');
     line.trim();
     if (line.length() == 0)
       continue;
 
-    String plain = decryptLine(line);
-    if (plain.length() == 0)
+    // Format: Hash(U); Hash(Tag); Enc(PK)
+    int s1 = line.indexOf(';');
+    int s2 = line.indexOf(';', s1 + 1);
+    if (s1 == -1 || s2 == -1)
       continue;
 
-    // Format: username;pk_hex;tag_hash
-    int sep1 = plain.indexOf(';');
-    if (sep1 == -1)
-      continue;
-    int sep2 = plain.indexOf(';', sep1 + 1);
+    String uHash = line.substring(0, s1);
 
-    if (sep2 != -1) {
-      String storedHash = plain.substring(sep2 + 1);
-      if (storedHash == tagHash) {
+    if (uHash == targetHash) {
+      // Possible Match - Verify by Decrypting the PK
+      String cipher = line.substring(s2 + 1);
+      String decryptedPK = decryptLine(cipher, pk); // Use PK as Symmetric Key
+
+      if (decryptedPK == pk_hex) {
         file.close();
-        return true;
+        return true; // Proven Identity
       }
     }
   }
@@ -225,83 +364,84 @@ bool isTagRegistered(String tagHash) {
   return false;
 }
 
-// Stores encrypted: username;pk_hex;tag_hash
+// New Logic: Duplicate Check via Hashes & Symmetric Encryption of PK
 bool registerUserPK(String u, String pk_hex, String tag_hash) {
-  if (getUserPK(u) != "")
-    return false; // User already exists
+  if (!isValidName(u))
+    return false;
 
-  if (isTagRegistered(tag_hash))
-    return false; // Tag already registered
+  // 1. Check Duplicates (Blind Check via Hashes)
+  File rfile = SD.open(FILE_USERS);
+  if (rfile) {
+    String newUHash = hashData(u);
+    String newTagHash = hashData(tag_hash);
 
+    while (rfile.available()) {
+      String line = rfile.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0)
+        continue;
+
+      // Format: Hash(U); Hash(Tag); Enc(PK)
+      int s1 = line.indexOf(';');
+      int s2 = line.indexOf(';', s1 + 1);
+      if (s1 != -1 && s2 != -1) {
+        String existingUHash = line.substring(0, s1);
+        String existingTagHash = line.substring(s1 + 1, s2);
+
+        if (existingUHash == newUHash) {
+          Serial.println("Error: User already exists.");
+          rfile.close();
+          return false;
+        }
+        if (existingTagHash == newTagHash) {
+          Serial.println("Error: HID Tag already registered.");
+          rfile.close();
+          return false;
+        }
+      }
+    }
+    rfile.close();
+  }
+
+  // 2. Encryption
+  // Encrypt the PK using the PK itself as the key
+  unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+  sodium_hex2bin(pk, sizeof(pk), pk_hex.c_str(), pk_hex.length(), NULL, NULL,
+                 NULL);
+
+  String cipherPK = encryptLine(pk_hex, pk);
+
+  // 3. Storage
   File file = SD.open(FILE_USERS, FILE_APPEND);
   if (!file)
     return false;
 
-  String plain = u + ";" + pk_hex + ";" + tag_hash;
-  file.println(encryptLine(plain));
+  // Format: Hash(U) ; Hash(Tag) ; Enc(PK)
+  String entry = hashData(u) + ";" + hashData(tag_hash) + ";" + cipherPK;
+  file.println(entry);
   file.close();
+
   return true;
 }
 
-// Helper to get item quantity. Returns -1 if not found.
 int getItemQty(String targetItem) {
   File file = SD.open(FILE_WAREHOUSE);
   if (!file)
     return -1;
-
   while (file.available()) {
     String line = file.readStringUntil('\n');
     line.trim();
     if (line.length() == 0)
       continue;
-
-    String plain = decryptLine(line);
-    if (plain.length() == 0)
-      continue;
-
+    String plain = decryptLine(line, storage_key);
     int sep = plain.indexOf(';');
-    if (sep != -1) {
-      String currentItem = plain.substring(0, sep);
-      if (currentItem == targetItem) {
-        String qtyStr = plain.substring(sep + 1);
-        file.close();
-        return qtyStr.toInt();
-      }
+    if (sep != -1 && plain.substring(0, sep) == targetItem) {
+      file.close();
+      return plain.substring(sep + 1).toInt();
     }
   }
   file.close();
   return -1;
-}
-
-// --- CRUD Operations ---
-
-String readWarehouse() {
-  File file = SD.open(FILE_WAREHOUSE);
-  if (!file)
-    return "Error opening warehouse file.\n";
-
-  String output = "\n--- Warehouse Inventory ---\n";
-  bool empty = true;
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    if (line.length() > 0) {
-      String plain = decryptLine(line);
-      if (plain.length() > 0) {
-        int sep = plain.indexOf(';');
-        if (sep != -1) {
-          String i = plain.substring(0, sep);
-          String q = plain.substring(sep + 1);
-          output += i + " -> " + q + "\n";
-          empty = false;
-        }
-      }
-    }
-  }
-  file.close();
-  if (empty)
-    output += "(Empty)\n";
-  return output;
 }
 
 bool addItem(String item, int qty) {
@@ -309,522 +449,542 @@ bool addItem(String item, int qty) {
   if (!file)
     return false;
   String plain = item + ";" + String(qty);
-  file.println(encryptLine(plain));
+  file.println(encryptLine(plain, storage_key));
   file.close();
   return true;
 }
 
-// Helper to rewrite file excluding a specific item or updating it
-// mode: 0=delete, 1=update
-bool modifyItem(String targetItem, int newQty, int mode) {
+String readWarehouse() {
   File file = SD.open(FILE_WAREHOUSE);
-  if (!file)
-    return false;
-
-  String tempContent = "";
-  bool found = false;
-
+  String out = "\n--- Inventory ---\n";
   while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0)
-      continue;
-
-    String plain = decryptLine(line);
-    if (plain.length() == 0)
-      continue;
-
-    int sep = plain.indexOf(';');
-    if (sep != -1) {
-      String currentItem = plain.substring(0, sep);
-
-      if (currentItem == targetItem) {
-        found = true;
-        if (mode == 1) { // Update
-          String newPlain = currentItem + ";" + String(newQty);
-          tempContent += encryptLine(newPlain) + "\n";
-        }
-        // If mode == 0 (Delete), we skip adding it
-      } else {
-        // Keep existing encrypted line (re-writing it is safe)
-        tempContent += line + "\n";
-      }
+    String plain = decryptLine(file.readStringUntil('\n'), storage_key);
+    if (plain.length() > 0) {
+      plain.replace(";", " -> ");
+      out += plain + "\n";
     }
   }
   file.close();
-
-  if (!found && mode == 1)
-    return false; // Item to update not found
-
-  // Rewrite file
-  SD.remove(FILE_WAREHOUSE);
-  file = SD.open(FILE_WAREHOUSE, FILE_WRITE);
-  if (!file)
-    return false;
-  file.print(tempContent);
-  file.close();
-
-  return true;
+  return out;
 }
 
-// --- Crypto Helpers ---
+// --- CRUD Helpers ---
 
-// Send Encrypted Message: [NONCE_HEX]:[CIPHERTEXT_HEX]
-void sendEncrypted(WiFiClient &client, String msg) {
-  if (!isSecure) {
-    client.println(msg);
-    return;
+bool createItem(String item, int qty) {
+  if (!isValidName(item))
+    return false; // Strict Name Check
+  if (qty < 0 || qty > MAX_QTY)
+    return false; // Bounds Check
+
+  if (getItemQty(item) != -1)
+    return false; // Already exists
+  return addItem(item, qty);
+}
+
+bool deleteItem(String target) {
+  File f = SD.open(FILE_WAREHOUSE);
+  if (!f)
+    return false;
+  File temp = SD.open("/temp.txt", FILE_WRITE);
+  if (!temp) {
+    f.close();
+    return false;
   }
 
-  unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
-  randombytes_buf(nonce, sizeof(nonce));
+  bool found = false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0)
+      continue;
+    String plain = decryptLine(line, storage_key);
+    int sep = plain.indexOf(';');
+    if (sep == -1)
+      continue;
 
-  unsigned long long ciphertext_len;
-  int msg_len = msg.length();
-  unsigned char *ciphertext = (unsigned char *)malloc(
-      msg_len + crypto_aead_chacha20poly1305_ietf_ABYTES);
+    String name = plain.substring(0, sep);
+    if (name == target) {
+      found = true;
+      // Skip writing this line to temp
+    } else {
+      temp.println(line); // Write encrypted line as is
+    }
+  }
+  f.close();
+  temp.close();
 
-  crypto_aead_chacha20poly1305_ietf_encrypt(ciphertext, &ciphertext_len,
-                                            (const unsigned char *)msg.c_str(),
-                                            msg_len, NULL, 0, // No AD
-                                            NULL, nonce, tx);
-
-  char *hex_nonce = (char *)malloc(sizeof(nonce) * 2 + 1);
-  sodium_bin2hex(hex_nonce, sizeof(nonce) * 2 + 1, nonce, sizeof(nonce));
-
-  char *hex_cipher = (char *)malloc(ciphertext_len * 2 + 1);
-  sodium_bin2hex(hex_cipher, ciphertext_len * 2 + 1, ciphertext,
-                 ciphertext_len);
-
-  client.print(hex_nonce);
-  client.print(":");
-  client.println(hex_cipher);
-
-  free(ciphertext);
-  free(hex_nonce);
-  free(hex_cipher);
+  SD.remove(FILE_WAREHOUSE);
+  SD.rename("/temp.txt", FILE_WAREHOUSE);
+  return found;
 }
 
-// Reset Session for new client
-void resetSecurity() {
-  isSecure = false;
-  // Generate new ephemeral keys for this session
-  crypto_kx_keypair(server_pk, server_sk);
+// Op: "ADD", "SUB", "SET"
+int updateHelpers(String target, int val, String op) {
+  File f = SD.open(FILE_WAREHOUSE);
+  if (!f)
+    return 0;
+  File temp = SD.open("/temp.txt", FILE_WRITE);
+  if (!temp) {
+    f.close();
+    return 0;
+  }
+
+  bool found = false;
+  int status = 0; // 0=Fail, 1=Success, 2=Limit
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    String plain = decryptLine(line, storage_key);
+    int sep = plain.indexOf(';');
+    if (line.length() == 0 || sep == -1) {
+      temp.println(line);
+      continue;
+    }
+
+    String name = plain.substring(0, sep);
+    if (name == target) {
+      found = true;
+      int oldQty = plain.substring(sep + 1).toInt();
+      long newQty = oldQty; // Use long for safety before check
+
+      if (op == "ADD")
+        newQty += val;
+      else if (op == "SUB")
+        newQty -= val;
+      else if (op == "SET")
+        newQty = val;
+
+      // Strict Check: If Out of Bounds -> ABORT CHANGE
+      if (newQty < 0 || newQty > MAX_QTY) {
+        status = 2;         // Limit Reached
+        temp.println(line); // Write OLD line
+      } else {
+        status = 1; // Success
+        String newPlain = name + ";" + String((int)newQty);
+        temp.println(encryptLine(newPlain, storage_key));
+      }
+    } else {
+      temp.println(line);
+    }
+  }
+  f.close();
+  temp.close();
+
+  SD.remove(FILE_WAREHOUSE);
+  SD.rename("/temp.txt", FILE_WAREHOUSE);
+
+  if (!found)
+    return 0;    // Not Found
+  return status; // 1 or 2
 }
 
-// --- Main Setup & Loop ---
+// --- WOLFSSL IO CALLBACKS ---
+int MyIORecv(WOLFSSL *ssl, char *buf, int sz, void *ctx) {
+  WiFiClient *client = (WiFiClient *)ctx;
+  if (client->available() > 0) {
+    return client->read((uint8_t *)buf, sz);
+  }
+  return WOLFSSL_CBIO_ERR_WANT_READ;
+}
+
+int MyIOSend(WOLFSSL *ssl, char *buf, int sz, void *ctx) {
+  WiFiClient *client = (WiFiClient *)ctx;
+  return client->write((const uint8_t *)buf, sz);
+}
+
+void sendAuthMenu(WOLFSSL *ssl) {
+  const char *msg = "\n--- Auth Menu ---\n"
+                    "- REG username password\n"
+                    "- LOG username password\n"
+                    "-----------------\n\n";
+  wolfSSL_write(ssl, msg, strlen(msg));
+}
+
+void sendCRUDMenu(WOLFSSL *ssl) {
+  const char *msg = "\n--- Warehouse Menu ---\n"
+                    "- READ\n"
+                    "- NEW ENTRY name quantity\n"
+                    "- ADD name quantity\n"
+                    "- SUB name quantity\n"
+                    "- UPDATE name quantity\n"
+                    "- DELETE name\n"
+                    "- LOGOUT\n"
+                    "----------------------\n\n";
+  wolfSSL_write(ssl, msg, strlen(msg));
+}
 
 void setup() {
   Serial.begin(115200);
-
-  if (sodium_init() < 0) {
-    Serial.println("Sodium Init Failed!");
+  if (sodium_init() < 0)
     while (1)
       ;
-  }
-
-  // Init SD
   if (!initSD()) {
-    Serial.println("SD Init Failed! Halting.");
+    Serial.println("SD Fail");
     while (1)
       ;
   }
-  Serial.println("SD Card Initialized.");
 
-  // Init WiFi AP
-  WiFi.softAP(AP_SSID, AP_PASS, 1, 1);
-  IPAddress myIP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(myIP);
-
-  // Start Server
-  server.begin();
-  Serial.println("Server started (Secure Mode).");
-}
-
-// Helper to send menu with a status prefix
-void sendMenu(WiFiClient &client, String prefix = "") {
-  String menu = "";
-  if (prefix.length() > 0) {
-    menu += prefix + "\n\n";
+  if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
+    Serial.println("WolfSSL Init Failed");
+    while (1)
+      ;
   }
-  menu += "--- MENU ---\n";
-  menu += "1. NEW ENTRY item qty\n";
-  menu += "2. READ\n";
-  menu += "3. UPDATE item new_qty\n";
-  menu += "4. ADD item qty_to_add\n";
-  menu += "5. SUB item qty_to_sub\n";
-  menu += "6. DELETE item\n";
-  menu += "7. LOGOUT";
-  sendEncrypted(client, menu);
+
+  // Use TLS 1.2 for broader compatibility if unsure about Client's heavy
+  // TLS 1.3 support
+  ctx = wolfSSL_CTX_new(wolfTLSv1_2_server_method());
+  if (ctx == NULL) {
+    Serial.println("WolfSSL Context Fail");
+    while (1)
+      ;
+  }
+
+  wolfSSL_CTX_SetIOSend(ctx, MyIOSend);
+  wolfSSL_CTX_SetIORecv(ctx, MyIORecv);
+
+  // Load Cert/Key with ASN1 (DER) flag
+  if (wolfSSL_CTX_use_certificate_buffer(ctx, server_cert_der,
+                                         sizeof(server_cert_der),
+                                         SSL_FILETYPE_ASN1) != WOLFSSL_SUCCESS)
+    Serial.println("Cert Load Fail");
+
+  if (wolfSSL_CTX_use_PrivateKey_buffer(ctx, server_key_der,
+                                        sizeof(server_key_der),
+                                        SSL_FILETYPE_ASN1) != WOLFSSL_SUCCESS)
+    Serial.println("Key Load Fail");
+
+  WiFi.softAP(AP_SSID, AP_PASS, 1, 1);
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
+  server.begin();
+  Serial.println("Secure Server Started (WolfSSL).");
 }
 
 void loop() {
   WiFiClient client = server.available();
 
   if (client) {
-    Serial.println("New Client Connected.");
-    resetSecurity(); // Gen new ephemeral keys
-
-    // Handshake Phase
-    unsigned long start = millis();
-    bool handshakeSuccess = false;
-
-    while (client.connected() && millis() - start < 5000) {
-      if (client.available()) {
-        String line = client.readStringUntil('\n');
-        line.trim();
-
-        if (line.length() == crypto_kx_PUBLICKEYBYTES * 2) {
-          // Decode Client Public Key
-          sodium_hex2bin(client_pk, sizeof(client_pk), line.c_str(),
-                         line.length(), NULL, NULL, NULL);
-
-          // Compute Session Keys
-          if (crypto_kx_server_session_keys(rx, tx, server_pk, server_sk,
-                                            client_pk) != 0) {
-            Serial.println("Key Exchange Failed");
-            client.stop();
-            break;
-          }
-
-          // Send Server Public Key
-          char hex_server_pk[crypto_kx_PUBLICKEYBYTES * 2 + 1];
-          sodium_bin2hex(hex_server_pk, sizeof(hex_server_pk), server_pk,
-                         sizeof(server_pk));
-          client.println(hex_server_pk);
-
-          isSecure = true;
-          handshakeSuccess = true;
-          Serial.println("Secure Handshake Complete.");
-          break;
-        }
-      }
-    }
-
-    if (!handshakeSuccess) {
-      Serial.println("Handshake Timeout or Fail.");
+    Serial.println("Client Connected. Starting TLS Handshake...");
+    WOLFSSL *ssl = wolfSSL_new(ctx);
+    if (ssl == NULL) {
       client.stop();
       return;
     }
 
-    ClientSession session;
-    session.state = STATE_AUTH;
+    wolfSSL_SetIOReadCtx(ssl, &client);
+    wolfSSL_SetIOWriteCtx(ssl, &client);
 
-    // Secure Loop
-    sendEncrypted(client, "Welcome to ESP32 Warehouse (Secure)!");
-    sendEncrypted(client, "1. Register (Format: REG username password)\n2. "
-                          "Login (Format: LOG username password)");
+    // --- HANDSHAKE LOOP FOR NON-BLOCKING IO ---
+    int ret = WOLFSSL_FAILURE;
+    int err = 0;
+    unsigned long start = millis();
+    bool handshake_done = false;
 
-    while (client.connected()) {
-      if (client.available()) {
-        String line = client.readStringUntil('\n');
-        line.trim();
-        if (line.length() == 0)
-          continue;
+    while (millis() - start < 10000) { // 10 Sec Timeout
+      ret = wolfSSL_accept(ssl);
+      if (ret == WOLFSSL_SUCCESS) {
+        handshake_done = true;
+        break;
+      }
 
-        // Decrypt
-        int sep = line.indexOf(':');
-        if (sep == -1)
-          continue;
-
-        String nonceHex = line.substring(0, sep);
-        String cipherHex = line.substring(sep + 1);
-
-        unsigned char nonce[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
-        sodium_hex2bin(nonce, sizeof(nonce), nonceHex.c_str(),
-                       nonceHex.length(), NULL, NULL, NULL);
-
-        int cipherLen = cipherHex.length() / 2;
-        unsigned char *ciphertext = (unsigned char *)malloc(cipherLen);
-        sodium_hex2bin(ciphertext, cipherLen, cipherHex.c_str(),
-                       cipherHex.length(), NULL, NULL, NULL);
-
-        unsigned char *decrypted = (unsigned char *)malloc(
-            cipherLen - crypto_aead_chacha20poly1305_ietf_ABYTES + 1);
-        unsigned long long decrypted_len;
-
-        if (crypto_aead_chacha20poly1305_ietf_decrypt(
-                decrypted, &decrypted_len, NULL, ciphertext, cipherLen, NULL, 0,
-                nonce, rx) != 0) {
-          Serial.println("Decryption Failed!");
-          free(ciphertext);
-          free(decrypted);
-          continue;
-        }
-        decrypted[decrypted_len] = '\0';
-        String plain = String((char *)decrypted);
-        Serial.println("RX: " + plain);
-
-        free(ciphertext);
-        free(decrypted);
-
-        // Command Processing
-        if (session.state == STATE_AUTH) {
-          if (plain.startsWith("REG ")) {
-            // REG username hex_public_key hex_tag_hash
-            int gap1 = plain.indexOf(' ');
-            int gap2 = plain.indexOf(' ', gap1 + 1);
-            int gap3 = plain.indexOf(' ', gap2 + 1);
-
-            if (gap2 != -1 && gap3 != -1) {
-              String u = plain.substring(gap1 + 1, gap2);
-              String pk_hex = plain.substring(gap2 + 1, gap3);
-              String tag_hash = plain.substring(gap3 + 1);
-
-              if (!isValidName(u)) {
-                sendEncrypted(client,
-                              "Error: Invalid Username (5-50 Alphanumeric).");
-              } else if (pk_hex.length() != crypto_sign_PUBLICKEYBYTES * 2) {
-                sendEncrypted(client, "Error: Invalid Public Key length.");
-              } else {
-                if (isTagRegistered(tag_hash)) {
-                  sendEncrypted(client, "Error: Tag already registered!");
-                } else if (registerUserPK(u, pk_hex, tag_hash)) {
-                  sendEncrypted(client, "REG SUCCESS");
-                } else {
-                  sendEncrypted(client, "Error: User exists or Write Fail");
-                }
-              }
-            } else
-              sendEncrypted(
-                  client, "Invalid Format. Use: REG username pk_hex tag_hash");
-
-            sendEncrypted(client,
-                          "1. Register (Format: REG username password)\n2. "
-                          "Login (Format: LOG username password)");
-          } else if (plain.startsWith("LOG ")) {
-            // LOG username
-            // 1. Get User PK
-            int gap1 = plain.indexOf(' ');
-            String u = plain.substring(gap1 + 1);
-
-            String user_pk_hex;
-            if (isValidName(u)) {
-              user_pk_hex = getUserPK(u);
-            } else {
-              user_pk_hex = "";
-            }
-
-            if (user_pk_hex == "") {
-              if (!isValidName(u))
-                sendEncrypted(client, "Error: Invalid Username Format.");
-              else
-                sendEncrypted(client, "Error: User not found.");
-            } else {
-              // 2. Generate Challenge (Nonce)
-              unsigned char challenge[32];
-              randombytes_buf(challenge, sizeof(challenge));
-              char challenge_hex[65];
-              sodium_bin2hex(challenge_hex, sizeof(challenge_hex), challenge,
-                             sizeof(challenge));
-
-              // 3. Send Challenge
-              sendEncrypted(client, String(challenge_hex));
-
-              // 4. Wait for Signature
-              unsigned long authStart = millis();
-              bool authDone = false;
-
-              while (client.connected() && millis() - authStart < 5000) {
-                if (client.available()) {
-                  String line = client.readStringUntil('\n');
-                  line.trim();
-                  if (line.length() == 0)
-                    continue;
-
-                  // Decrypt Signature
-                  String sigHex = "";
-                  // ... (decrypt logic inline or re-use helper? Inline for now
-                  // to avoid complexity)
-                  int sep = line.indexOf(':');
-                  if (sep != -1) {
-                    String nonceHex = line.substring(0, sep);
-                    String cipherHex = line.substring(sep + 1);
-                    unsigned char
-                        n[crypto_aead_chacha20poly1305_ietf_NPUBBYTES];
-                    sodium_hex2bin(n, sizeof(n), nonceHex.c_str(),
-                                   nonceHex.length(), NULL, NULL, NULL);
-                    int cLen = cipherHex.length() / 2;
-                    unsigned char *c = (unsigned char *)malloc(cLen);
-                    sodium_hex2bin(c, cLen, cipherHex.c_str(),
-                                   cipherHex.length(), NULL, NULL, NULL);
-                    unsigned char *d = (unsigned char *)malloc(
-                        cLen - crypto_aead_chacha20poly1305_ietf_ABYTES + 1);
-                    unsigned long long dLen;
-                    if (crypto_aead_chacha20poly1305_ietf_decrypt(
-                            d, &dLen, NULL, c, cLen, NULL, 0, n, rx) == 0) {
-                      d[dLen] = '\0';
-                      sigHex = String((char *)d);
-                    }
-                    free(c);
-                    free(d);
-                  }
-
-                  if (sigHex.length() > 0) {
-                    // 5. Verify Signature
-                    unsigned char sig[crypto_sign_BYTES];
-                    sodium_hex2bin(sig, sizeof(sig), sigHex.c_str(),
-                                   sigHex.length(), NULL, NULL, NULL);
-
-                    unsigned char user_pk[crypto_sign_PUBLICKEYBYTES];
-                    sodium_hex2bin(user_pk, sizeof(user_pk),
-                                   user_pk_hex.c_str(), user_pk_hex.length(),
-                                   NULL, NULL, NULL);
-
-                    if (crypto_sign_verify_detached(
-                            sig, challenge, sizeof(challenge), user_pk) == 0) {
-                      session.state = STATE_LOGGED_IN;
-                      session.username = u;
-                      sendMenu(client, "Login Successful! (ZKP Verified)");
-                    } else {
-                      sendEncrypted(client, "Auth Failed: Invalid Signature.");
-                    }
-                    authDone = true;
-                    break;
-                  }
-                }
-              }
-              if (!authDone)
-                sendEncrypted(client, "Auth Timeout.");
-            }
-          } else
-            sendEncrypted(client, "Unknown command. Please Register or Login.");
-
-        } else if (session.state == STATE_LOGGED_IN) {
-          if (plain.startsWith("NEW ENTRY ")) {
-            String rest = plain.substring(10); // "NEW ENTRY "
-            int sp = rest.lastIndexOf(' ');
-            if (sp != -1) {
-              String item = rest.substring(0, sp);
-              String qtyStr = rest.substring(sp + 1);
-
-              if (!isValidName(item)) {
-                sendEncrypted(client, "Error: Invalid Name (5-50 Alphanum).");
-              } else if (!isValidNumber(qtyStr)) {
-                sendEncrypted(client, "Error: Invalid Quantity.");
-              } else {
-                long qty = qtyStr.toInt();
-                if (qty < 0)
-                  sendEncrypted(client, "Error: Negative.");
-                else if (qty > MAX_QTY)
-                  sendEncrypted(client,
-                                "Error: Limit of 10000 units exceeded.");
-                else if (getItemQty(item) != -1)
-                  sendEncrypted(client, "Error: Exists.");
-                else {
-                  addItem(item, (int)qty);
-                  sendMenu(client, "New Entry Added.");
-                }
-              }
-            } else
-              sendEncrypted(client, "Invalid Format.");
-
-          } else if (plain == "READ") {
-            String resp = readWarehouse();
-            sendMenu(client, resp); // Print Inventory then Menu
-
-          } else if (plain.startsWith("UPDATE ")) {
-            int sp1 = plain.indexOf(' ');
-            int sp2 = plain.lastIndexOf(' ');
-            if (sp2 > sp1) {
-              String item = plain.substring(sp1 + 1, sp2);
-              String qtyStr = plain.substring(sp2 + 1);
-
-              if (!isValidName(item)) {
-                sendEncrypted(client, "Error: Invalid Name.");
-              } else if (!isValidNumber(qtyStr)) {
-                sendEncrypted(client, "Error: Invalid Quantity.");
-              } else {
-                long qty = qtyStr.toInt();
-                if (qty < 0)
-                  sendEncrypted(client, "Error: Negative.");
-                else if (qty > MAX_QTY)
-                  sendEncrypted(client, "Error: Limit of 10000 units exeeded");
-                else if (getItemQty(item) == -1)
-                  sendEncrypted(client, "Error: Not Found.");
-                else {
-                  modifyItem(item, (int)qty, 1);
-                  sendMenu(client, "Updated.");
-                }
-              }
-            } else
-              sendEncrypted(client, "Invalid Format.");
-
-          } else if (plain.startsWith("ADD ")) {
-            int sp1 = plain.indexOf(' ');
-            int sp2 = plain.lastIndexOf(' ');
-            if (sp2 > sp1) {
-              String item = plain.substring(sp1 + 1, sp2);
-              String qtyStr = plain.substring(sp2 + 1);
-
-              if (!isValidName(item)) {
-                sendEncrypted(client, "Error: Invalid command");
-              } else if (!isValidNumber(qtyStr)) {
-                sendEncrypted(client, "Error: Invalid Quantity.");
-              } else {
-                long qtyA = qtyStr.toInt();
-                int q = getItemQty(item);
-                if (q == -1)
-                  sendEncrypted(client, "Error: Not Found.");
-                else if (qtyA < 0)
-                  sendEncrypted(client, "Error: Negative.");
-                else if ((long)q + qtyA > MAX_QTY)
-                  sendEncrypted(client, "Error: Limit of 10000 units exeeded");
-                else {
-                  modifyItem(item, q + (int)qtyA, 1);
-                  sendMenu(client, "Added.");
-                }
-              }
-            } else
-              sendEncrypted(client, "Invalid Format.");
-
-          } else if (plain.startsWith("SUB ")) {
-            int sp1 = plain.indexOf(' ');
-            int sp2 = plain.lastIndexOf(' ');
-            if (sp2 > sp1) {
-              String item = plain.substring(sp1 + 1, sp2);
-              String qtyStr = plain.substring(sp2 + 1);
-
-              if (!isValidName(item)) {
-                sendEncrypted(client, "Error: Invalid Name.");
-              } else if (!isValidNumber(qtyStr)) {
-                sendEncrypted(client, "Error: Invalid Quantity.");
-              } else {
-                long qtyS = qtyStr.toInt();
-                int q = getItemQty(item);
-                if (q == -1)
-                  sendEncrypted(client, "Error: Non-existent item");
-                else if (q - qtyS < 0)
-                  sendEncrypted(client, "Error: Quantity below 0");
-                else {
-                  modifyItem(item, q - (int)qtyS, 1);
-                  sendMenu(client, "Subtracted.");
-                }
-              }
-            } else
-              sendEncrypted(client, "Invalid Format.");
-
-          } else if (plain.startsWith("DELETE ")) {
-            String item = plain.substring(7);
-            if (!isValidName(item)) {
-              sendEncrypted(client, "Error: Invalid Name.");
-            } else if (getItemQty(item) != -1) {
-              modifyItem(item, 0, 0);
-              sendMenu(client, "Deleted.");
-            } else
-              sendEncrypted(client, "Error: Not Found.");
-
-          } else if (plain == "LOGOUT") {
-            session.state = STATE_AUTH;
-            sendEncrypted(client, "\nLogged out.\n");
-            sendEncrypted(client,
-                          "1. Register (Format: REG username password)\n2. "
-                          "Login (Format: LOG username password)");
-          } else
-            sendEncrypted(client, "Unknown Command.");
-        }
+      err = wolfSSL_get_error(ssl, ret);
+      if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
+        delay(10); // Yield to let data arrive
+        continue;
+      } else {
+        // Fatal Error
+        break;
       }
     }
+
+    if (handshake_done) {
+      Serial.println("TLS Handshake OK!");
+      ClientSession session = {"", false};
+      const char *welcome = "Welcome to Secure Warehouse (TLS Verify OK)!\n";
+      wolfSSL_write(ssl, welcome, strlen(welcome));
+      sendAuthMenu(ssl);
+
+      char buf[256];
+      while (client.connected()) {
+        // Read Loop
+        int rx_ret = wolfSSL_read(ssl, buf, sizeof(buf) - 1);
+        if (rx_ret > 0) {
+          buf[rx_ret] = '\0';
+          String line = String(buf);
+          line.trim();
+
+          if (line.length() == 0)
+            continue; // Fix Double Printing
+
+          Serial.println("RX: " + line);
+
+          if (line.startsWith("REG ")) {
+            int s1 = line.indexOf(' ');
+            int s2 = line.indexOf(' ', s1 + 1);
+            int s3 = line.indexOf(' ', s2 + 1);
+
+            if (s1 != -1 && s2 != -1 && s3 != -1) {
+              String u = line.substring(s1 + 1, s2);
+              String pk = line.substring(s2 + 1, s3);
+              String hash = line.substring(s3 + 1);
+
+              if (registerUserPK(u, pk, hash)) {
+                wolfSSL_write(ssl, "REG Success\n", 12);
+                Serial.println("Registered New User: " + u);
+              } else {
+                wolfSSL_write(ssl, "REG Failed: User Exists or SD Error\n", 36);
+                Serial.println("Registration Failed for user: " + u);
+              }
+              sendAuthMenu(ssl); // Reprint Auth Menu
+            } else {
+              wolfSSL_write(ssl, "REG Error: Syntax\n", 18);
+              sendAuthMenu(ssl);
+            }
+          } else if (line.startsWith("LOG ")) {
+            // Expected: LOG username pk_hex
+            int sp1 = line.indexOf(' ');
+            int sp2 = line.indexOf(' ', sp1 + 1);
+            if (sp1 != -1 && sp2 != -1) {
+              String u = line.substring(sp1 + 1, sp2);
+              String pk_hex = line.substring(sp2 + 1);
+
+              if (findUser(u, pk_hex)) {
+                // 1. Generate Challenge
+                unsigned char challenge[32];
+                randombytes_buf(challenge, sizeof(challenge));
+                char challengeHex[65];
+                sodium_bin2hex(challengeHex, sizeof(challengeHex), challenge,
+                               sizeof(challenge));
+
+                // 2. Send Challenge
+                wolfSSL_write(ssl, challengeHex, 64);
+
+                // 3. Wait for Response (Signature)
+                unsigned long authStart = millis();
+                bool authReceived = false;
+                char sigBuf[crypto_sign_BYTES * 2 + 1];
+                int sigIdx = 0;
+
+                while (millis() - authStart < 5000) {
+                  char c;
+                  if (wolfSSL_read(ssl, &c, 1) > 0) {
+                    if (c == '\n' || c == '\r')
+                      continue;
+                    sigBuf[sigIdx++] = c;
+                    if (sigIdx == crypto_sign_BYTES * 2) {
+                      sigBuf[sigIdx] = '\0';
+                      authReceived = true;
+                      break;
+                    }
+                  } else {
+                    delay(10);
+                  }
+                }
+
+                if (authReceived) {
+                  // 4. Verify Signature
+                  unsigned char sig[crypto_sign_BYTES];
+                  unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+
+                  sodium_hex2bin(sig, sizeof(sig), sigBuf, strlen(sigBuf), NULL,
+                                 NULL, NULL);
+                  sodium_hex2bin(pk, sizeof(pk), pk_hex.c_str(),
+                                 pk_hex.length(), NULL, NULL, NULL);
+
+                  if (crypto_sign_verify_detached(sig, challenge,
+                                                  sizeof(challenge), pk) == 0) {
+                    session.loggedIn = true;
+                    session.username = u;
+                    wolfSSL_write(ssl, "Auth Success: Welcome ", 22);
+                    wolfSSL_write(ssl, u.c_str(), u.length());
+                    wolfSSL_write(ssl, "\n", 1);
+                    Serial.println("User " + u +
+                                   " authenticated successfully.");
+                    sendCRUDMenu(ssl);
+                  } else {
+                    wolfSSL_write(ssl, "Auth Failed: Invalid Signature\n", 31);
+                    Serial.println("Auth Failed: Signature Mismatch for user " +
+                                   u);
+                    sendAuthMenu(ssl);
+                  }
+                } else {
+                  wolfSSL_write(ssl, "Auth Failed: Timeout\n", 21);
+                  Serial.println("Auth Failed: Timeout waiting for signature.");
+                  sendAuthMenu(ssl);
+                }
+              } else {
+                wolfSSL_write(ssl, "Error: User/Key Mismatch (Duplicate?)\n",
+                              38);
+                sendAuthMenu(ssl);
+              }
+            } else {
+              wolfSSL_write(ssl, "Error: Invalid Syntax\n", 22);
+              sendAuthMenu(ssl);
+            }
+          } else if (line.startsWith("LOGOUT")) {
+            session.loggedIn = false;
+            session.username = "";
+            wolfSSL_write(ssl, "Logged Out\n", 11);
+            sendAuthMenu(ssl);
+          } else if (session.loggedIn) {
+            // --- CRUD LOGIC ---
+            if (line == "READ") {
+              String inv = readWarehouse();
+              wolfSSL_write(ssl, inv.c_str(), inv.length());
+              sendCRUDMenu(ssl);
+            }
+            // NEW ENTRY name qty
+            else if (line.startsWith("NEW ENTRY ")) {
+              int s = line.lastIndexOf(' ');
+              if (s > 9) {
+                String name = line.substring(10, s);
+                String qtyStr = line.substring(s + 1);
+
+                if (!isValidName(name)) {
+                  wolfSSL_write(ssl, "Error: Invalid characters\n", 26);
+                } else if (!isValidNumber(qtyStr)) {
+                  wolfSSL_write(ssl, "Error: Invalid Qty Format\n", 26);
+                } else {
+                  long q = qtyStr.toInt();
+                  if (q > MAX_QTY) {
+                    wolfSSL_write(ssl, "Error: Quantity exceeds 10000\n", 30);
+                  } else {
+                    if (createItem(name, (int)q))
+                      wolfSSL_write(ssl, "OK: Created\n", 12);
+                    else
+                      wolfSSL_write(ssl, "Error: Exists\n", 14);
+                  }
+                }
+              } else
+                wolfSSL_write(ssl, "Error: Syntax\n", 14);
+              sendCRUDMenu(ssl);
+            }
+            // ADD name qty
+            else if (line.startsWith("ADD ")) {
+              int s = line.lastIndexOf(' ');
+              if (s != -1 && s > 4) {
+                String name = line.substring(4, s);
+                String qtyStr = line.substring(s + 1);
+
+                if (!isValidName(name)) {
+                  wolfSSL_write(ssl, "Error: Invalid characters\n", 26);
+                } else if (!isValidNumber(qtyStr)) {
+                  wolfSSL_write(ssl, "Error: Invalid Qty Format\n", 26);
+                } else {
+                  long q = qtyStr.toInt();
+                  if (q > MAX_QTY) {
+                    wolfSSL_write(ssl, "Error: Quantity exceeds 10000\n", 30);
+                  } else {
+                    int res = updateHelpers(name, (int)q, "ADD");
+                    if (res == 1)
+                      wolfSSL_write(ssl, "OK: Added\n", 10);
+                    else if (res == 2)
+                      wolfSSL_write(ssl, "Error: Limit Reached (Max 10000)\n",
+                                    33);
+                    else
+                      wolfSSL_write(ssl, "Error: Not Found\n", 17);
+                  }
+                }
+              } else
+                wolfSSL_write(ssl, "Error: Syntax\n", 14);
+              sendCRUDMenu(ssl);
+            }
+            // SUB name qty
+            else if (line.startsWith("SUB ")) {
+              int s = line.lastIndexOf(' ');
+              if (s != -1 && s > 4) {
+                String name = line.substring(4, s);
+                String qtyStr = line.substring(s + 1);
+
+                if (!isValidName(name)) {
+                  wolfSSL_write(ssl, "Error: Invalid characters\n", 26);
+                } else if (!isValidNumber(qtyStr)) {
+                  wolfSSL_write(ssl, "Error: Invalid Qty Format\n", 26);
+                } else {
+                  long q = qtyStr.toInt();
+                  if (q > MAX_QTY) {
+                    wolfSSL_write(ssl, "Error: Quantity exceeds 10000\n", 30);
+                  } else {
+                    int res = updateHelpers(name, (int)q, "SUB");
+                    if (res == 1)
+                      wolfSSL_write(ssl, "OK: Subtracted\n", 15);
+                    else if (res == 2)
+                      wolfSSL_write(ssl, "Error: Limit Reached (Min 0)\n", 29);
+                    else
+                      wolfSSL_write(ssl, "Error: Not Found\n", 17);
+                  }
+                }
+              } else
+                wolfSSL_write(ssl, "Error: Syntax\n", 14);
+              sendCRUDMenu(ssl);
+            }
+            // UPDATE name qty
+            else if (line.startsWith("UPDATE ")) {
+              int s = line.lastIndexOf(' ');
+              if (s != -1 && s > 7) {
+                String name = line.substring(7, s);
+                String qtyStr = line.substring(s + 1);
+
+                if (!isValidName(name)) {
+                  wolfSSL_write(ssl, "Error: Invalid characters\n", 26);
+                } else if (!isValidNumber(qtyStr)) {
+                  wolfSSL_write(ssl, "Error: Invalid Qty Format\n", 26);
+                } else {
+                  long q = qtyStr.toInt();
+                  if (q > MAX_QTY) {
+                    wolfSSL_write(ssl, "Error: Quantity exceeds 10000\n", 30);
+                  } else {
+                    int res = updateHelpers(name, (int)q, "SET");
+                    if (res == 1)
+                      wolfSSL_write(ssl, "OK: Updated\n", 12);
+                    else if (res == 2)
+                      wolfSSL_write(ssl, "Error: Limit Reached\n",
+                                    21); // Should not happen if q check pass
+                    else
+                      wolfSSL_write(ssl, "Error: Not Found\n", 17);
+                  }
+                }
+              } else
+                wolfSSL_write(ssl, "Error: Syntax\n", 14);
+              sendCRUDMenu(ssl);
+            }
+            // DELETE name
+            else if (line.startsWith("DELETE ")) {
+              String name = line.substring(7);
+              if (deleteItem(name))
+                wolfSSL_write(ssl, "OK: Deleted\n", 12);
+              else
+                wolfSSL_write(ssl, "Error: Not Found\n", 17);
+              sendCRUDMenu(ssl);
+            } else {
+              wolfSSL_write(ssl, "Unknown Op\n", 11);
+              sendCRUDMenu(ssl);
+            }
+          } else {
+            // Not Logged In
+            wolfSSL_write(ssl, "Access Denied: Login Required\n", 30);
+            sendAuthMenu(ssl);
+          }
+        } else {
+          int rx_err = wolfSSL_get_error(ssl, rx_ret);
+          if (rx_err != WOLFSSL_ERROR_WANT_READ &&
+              rx_err != WOLFSSL_ERROR_WANT_WRITE) {
+            break;
+          }
+        }
+        delay(10);
+      }
+    } else {
+      Serial.print("TLS Handshake Failed. Error: ");
+      Serial.println(err);
+      char errBuf[80];
+      wolfSSL_ERR_error_string(err, errBuf);
+      Serial.println(errBuf);
+    }
+
+    wolfSSL_free(ssl);
+    client.stop();
+    Serial.println("Client Disconnected.");
   }
 }
